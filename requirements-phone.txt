@@ -1,0 +1,5 @@
+py-cord
+python-dotenv
+requests
+fastapi
+uvicorn
