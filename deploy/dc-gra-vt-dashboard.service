@@ -1,0 +1,16 @@
+[Unit]
+Description=DC-Gra-vt-bot Dashboard API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dc-gra-vt-bot
+EnvironmentFile=/opt/dc-gra-vt-bot/.env
+ExecStart=/opt/dc-gra-vt-bot/.venv/bin/uvicorn dashboard_api:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=8
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target

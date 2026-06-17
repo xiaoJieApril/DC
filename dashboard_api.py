@@ -1,0 +1,589 @@
+import os
+import secrets
+import hmac
+import hashlib
+import base64
+import time
+import urllib.parse
+
+import requests
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
+
+from storage import delete_record, init_db, load_config, save_config, upsert_message, upsert_reaction_role
+
+
+load_dotenv()
+init_db()
+
+DISCORD_API = "https://discord.com/api/v10"
+COLOR_MAP = {
+    "Blurple": 0x5865F2,
+    "Green": 0x57F287,
+    "Red": 0xED4245,
+    "Yellow": 0xFEE75C,
+    "White": 0xFFFFFF,
+}
+DEFAULT_RR_DESCRIPTION = "使用下拉式選單來更改名字顏色"
+
+
+def env(name, default=""):
+    return os.getenv(name, default).strip()
+
+
+def allowed_origins():
+    origins = {
+        "http://localhost:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    }
+    public_origin = env("PUBLIC_FRONTEND_ORIGIN")
+    if public_origin:
+        origins.add(public_origin.rstrip("/"))
+    return sorted(origins)
+
+
+app = FastAPI(title="DC-Gra-vt-bot Dashboard API")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=env("SESSION_SECRET") or secrets.token_urlsafe(32),
+    same_site="lax",
+    https_only=False,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class MessagePayload(BaseModel):
+    channel_id: str
+    content: str
+    use_embed: bool = True
+    title: str = "Announcement"
+    color: str = "Blurple"
+    footer: str = ""
+
+
+class MappingPayload(BaseModel):
+    emoji: str
+    role_id: str
+    role_name: str = ""
+
+
+class ReactionRolePayload(BaseModel):
+    channel_id: str
+    panel_name: str = ""
+    title: str = ""
+    description: str = DEFAULT_RR_DESCRIPTION
+    mode: str = "dropdown"
+    use_embed: bool = True
+    color: str = "Blurple"
+    mappings: list[MappingPayload]
+
+
+class SavedUpdatePayload(BaseModel):
+    section: str
+    guild_id: str
+    message_id: str
+    payload: dict
+
+
+def require_admin(request: Request):
+    if request.session.get("admin") or verify_bearer(request):
+        return True
+    raise HTTPException(status_code=401, detail="Not logged in")
+
+
+def auth_secret():
+    value = env("SESSION_SECRET")
+    if not value:
+        raise HTTPException(status_code=500, detail="SESSION_SECRET is missing on the server")
+    return value.encode("utf-8")
+
+
+def create_access_token(username):
+    issued = str(int(time.time()))
+    body = f"{username}:{issued}"
+    sig = hmac.new(auth_secret(), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{body}:{sig}".encode("utf-8")).decode("ascii")
+
+
+def verify_bearer(request: Request):
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("bearer "):
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(header.split(" ", 1)[1].encode("ascii")).decode("utf-8")
+        username, issued, sig = raw.rsplit(":", 2)
+        body = f"{username}:{issued}"
+        expected = hmac.new(auth_secret(), body.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return False
+        return int(time.time()) - int(issued) < 60 * 60 * 24 * 14
+    except Exception:
+        return False
+
+
+def is_admin_request(request: Request):
+    try:
+        return bool(request.session.get("admin") or verify_bearer(request))
+    except HTTPException:
+        return False
+
+
+def require_configured_auth():
+    if not env("ADMIN_PASSWORD"):
+        raise HTTPException(status_code=500, detail="ADMIN_PASSWORD is missing on the server")
+    if not env("SESSION_SECRET"):
+        raise HTTPException(status_code=500, detail="SESSION_SECRET is missing on the server")
+
+
+def require_logged_in(request: Request):
+    if not is_admin_request(request):
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return True
+
+
+def token():
+    value = env("DISCORD_TOKEN")
+    if not value:
+        raise HTTPException(status_code=500, detail="DISCORD_TOKEN is missing on the server")
+    return value
+
+
+def discord_request(method, path, payload=None):
+    headers = {
+        "Authorization": f"Bot {token()}",
+        "Content-Type": "application/json",
+    }
+    response = requests.request(
+        method,
+        f"{DISCORD_API}{path}",
+        headers=headers,
+        json=payload,
+        timeout=15,
+    )
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("message", response.text)
+        except ValueError:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    if response.text:
+        return response.json()
+    return None
+
+
+def first_non_empty_line(value):
+    for line in str(value or "").splitlines():
+        clean = line.strip()
+        if clean:
+            return clean
+    return ""
+
+
+def parse_custom_emoji(value):
+    raw = value.strip()
+    if raw.startswith("<:") and raw.endswith(">"):
+        name, emoji_id = raw[2:-1].split(":", 1)
+        return {"name": name, "id": emoji_id, "animated": False}
+    if raw.startswith("<a:") and raw.endswith(">"):
+        name, emoji_id = raw[3:-1].split(":", 1)
+        return {"name": name, "id": emoji_id, "animated": True}
+    return None
+
+
+def custom_emoji_value(emoji):
+    prefix = "a" if emoji.get("animated") else ""
+    return f"<{prefix}:{emoji['name']}:{emoji['id']}>"
+
+
+def emoji_name_from_text(value):
+    raw = value.strip()
+    if raw.startswith(":") and raw.endswith(":") and len(raw) > 2:
+        return raw[1:-1].lower()
+    return ""
+
+
+def resolve_emoji_value(guild_id, value):
+    raw = value.strip()
+    if parse_custom_emoji(raw) or not emoji_name_from_text(raw):
+        return raw
+    target = emoji_name_from_text(raw)
+    for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
+        if emoji.get("name", "").lower() == target:
+            return custom_emoji_value(emoji)
+    return raw
+
+
+def reaction_route_emoji(value):
+    parsed = parse_custom_emoji(value)
+    if parsed:
+        return f"{parsed['name']}:{parsed['id']}"
+    return value
+
+
+def component_emoji(value):
+    parsed = parse_custom_emoji(value)
+    if parsed:
+        payload = {"name": parsed["name"], "id": parsed["id"]}
+        if parsed["animated"]:
+            payload["animated"] = True
+        return payload
+    return {"name": value}
+
+
+def role_select_components(message_id, mappings):
+    options = []
+    for item in mappings[:25]:
+        option = {
+            "label": (item.get("role_name") or item["role_id"])[:100],
+            "value": str(item["role_id"]),
+            "description": f"Toggle {(item.get('role_name') or item['role_id'])}"[:100],
+        }
+        if item.get("emoji"):
+            option["emoji"] = component_emoji(item["emoji"])
+        options.append(option)
+    return [
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 3,
+                    "custom_id": f"role_select:{message_id}",
+                    "placeholder": "Select your roles",
+                    "min_values": 0,
+                    "max_values": min(25, max(1, len(options))),
+                    "options": options,
+                }
+            ],
+        }
+    ]
+
+
+def role_button_components(message_id, mappings):
+    if not mappings:
+        return []
+    item = mappings[0]
+    button = {
+        "type": 2,
+        "style": 3,
+        "label": (item.get("role_name") or "Accept")[:80],
+        "custom_id": f"role_button:{message_id}:{item['role_id']}",
+    }
+    if item.get("emoji"):
+        button["emoji"] = component_emoji(item["emoji"])
+    return [{"type": 1, "components": [button]}]
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "storage": "sqlite"}
+
+
+@app.post("/api/login")
+def login(payload: LoginPayload, request: Request):
+    require_configured_auth()
+    username = env("ADMIN_USERNAME", "admin")
+    password = env("ADMIN_PASSWORD")
+    if secrets.compare_digest(payload.username, username) and secrets.compare_digest(payload.password, password):
+        request.session["admin"] = True
+        return {"ok": True, "access_token": create_access_token(username)}
+    raise HTTPException(status_code=401, detail="Invalid username or password")
+
+
+@app.post("/api/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(request: Request):
+    return {"logged_in": is_admin_request(request)}
+
+
+@app.get("/api/discord/guilds", dependencies=[Depends(require_admin)])
+def guilds():
+    return discord_request("GET", "/users/@me/guilds")
+
+
+@app.get("/api/discord/guilds/{guild_id}/channels", dependencies=[Depends(require_admin)])
+def channels(guild_id: str):
+    data = discord_request("GET", f"/guilds/{guild_id}/channels")
+    return [item for item in data if item.get("type") in (0, 5)]
+
+
+@app.get("/api/discord/guilds/{guild_id}/roles", dependencies=[Depends(require_admin)])
+def roles(guild_id: str):
+    data = discord_request("GET", f"/guilds/{guild_id}/roles")
+    return [item for item in data if item.get("name") != "@everyone" and not item.get("managed")]
+
+
+@app.get("/api/discord/guilds/{guild_id}/emojis", dependencies=[Depends(require_admin)])
+def emojis(guild_id: str):
+    return discord_request("GET", f"/guilds/{guild_id}/emojis")
+
+
+@app.get("/api/saved", dependencies=[Depends(require_admin)])
+def saved():
+    return load_config()
+
+
+@app.post("/api/messages", dependencies=[Depends(require_admin)])
+def send_message(payload: MessagePayload):
+    if not payload.channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Channel ID must be numeric")
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    channel = discord_request("GET", f"/channels/{payload.channel_id}")
+    guild_id = channel.get("guild_id", "dm")
+    body = {}
+    record = {
+        "channel_id": payload.channel_id,
+        "type": "embed" if payload.use_embed else "plain",
+        "title": payload.title if payload.use_embed else "",
+        "content": payload.content,
+        "color": payload.color if payload.use_embed else "",
+        "footer": payload.footer if payload.use_embed else "",
+    }
+    if payload.use_embed:
+        embed = {
+            "description": payload.content,
+            "color": COLOR_MAP.get(payload.color, COLOR_MAP["Blurple"]),
+        }
+        if payload.title:
+            embed["title"] = payload.title
+        if payload.footer:
+            embed["footer"] = {"text": payload.footer}
+        body["embeds"] = [embed]
+    else:
+        body["content"] = payload.content
+
+    body["allowed_mentions"] = {"parse": ["users", "roles"]}
+    result = discord_request("POST", f"/channels/{payload.channel_id}/messages", body)
+    upsert_message(guild_id, result["id"], record)
+    return {"message_id": result["id"], "guild_id": guild_id, "record": record}
+
+
+@app.post("/api/reaction-roles", dependencies=[Depends(require_admin)])
+def create_reaction_role(payload: ReactionRolePayload):
+    if not payload.channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Channel ID must be numeric")
+    if not payload.mappings:
+        raise HTTPException(status_code=400, detail="Add at least one role mapping")
+    channel = discord_request("GET", f"/channels/{payload.channel_id}")
+    guild_id = channel.get("guild_id")
+    if not guild_id:
+        raise HTTPException(status_code=400, detail="Reaction roles must be in a server channel")
+
+    mappings = []
+    for item in payload.mappings:
+        mappings.append(
+            {
+                "emoji": resolve_emoji_value(guild_id, item.emoji),
+                "role_id": str(item.role_id),
+                "role_name": item.role_name or str(item.role_id),
+            }
+        )
+    if payload.mode == "button":
+        mappings = mappings[:1]
+
+    mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in mappings)
+    footer_text = payload.description.strip()
+    description = (footer_text + "\n\n" if footer_text else "") + mapping_lines
+    body = {}
+    if payload.use_embed:
+        embed_payload = {
+            "description": description,
+            "color": COLOR_MAP.get(payload.color, COLOR_MAP["Blurple"]),
+        }
+        if payload.title.strip():
+            embed_payload["title"] = payload.title.strip()
+        body["embeds"] = [embed_payload]
+    else:
+        body["content"] = f"# {payload.title.strip()}\n{description}" if payload.title.strip() else description
+    body["allowed_mentions"] = {"parse": ["users", "roles"]}
+
+    message = discord_request("POST", f"/channels/{payload.channel_id}/messages", body)
+    message_id = message["id"]
+    failed_reactions = []
+    mode = payload.mode if payload.mode in ("reaction", "button") else "dropdown"
+    if mode == "reaction":
+        for item in mappings:
+            route_emoji = urllib.parse.quote(reaction_route_emoji(item["emoji"]), safe="")
+            try:
+                discord_request("PUT", f"/channels/{payload.channel_id}/messages/{message_id}/reactions/{route_emoji}/@me")
+            except HTTPException as exc:
+                failed_reactions.append(f"{item['emoji']}: {exc.detail}")
+    elif mode == "dropdown":
+        discord_request(
+            "PATCH",
+            f"/channels/{payload.channel_id}/messages/{message_id}",
+            {"components": role_select_components(message_id, mappings)},
+        )
+    else:
+        discord_request(
+            "PATCH",
+            f"/channels/{payload.channel_id}/messages/{message_id}",
+            {"components": role_button_components(message_id, mappings)},
+        )
+
+    if mode == "reaction" and len(failed_reactions) == len(mappings):
+        raise HTTPException(
+            status_code=400,
+            detail="Message was sent, but no reactions could be added. Check Add Reactions, Read Message History, and Use External Emoji.",
+        )
+
+    record = {
+        "channel_id": payload.channel_id,
+        "title": payload.title.strip(),
+        "panel_name": payload.panel_name.strip() or first_non_empty_line(payload.description) or "Untitled role panel",
+        "description": description,
+        "mode": mode,
+        "kind": "reaction_role",
+        "mappings": {item["emoji"]: item["role_id"] for item in mappings},
+    }
+    upsert_reaction_role(guild_id, message_id, record)
+    return {"message_id": message_id, "guild_id": guild_id, "record": record, "failed_reactions": failed_reactions}
+
+
+@app.patch("/api/messages/{guild_id}/{message_id}", dependencies=[Depends(require_admin)])
+def edit_message(guild_id: str, message_id: str, payload: MessagePayload):
+    config = load_config()
+    existing = config.get("messages", {}).get(str(guild_id), {}).get(str(message_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Saved message not found")
+    body = {"allowed_mentions": {"parse": ["users", "roles"]}}
+    record = {
+        "channel_id": existing.get("channel_id", payload.channel_id),
+        "type": "embed" if payload.use_embed else "plain",
+        "title": payload.title if payload.use_embed else "",
+        "content": payload.content,
+        "color": payload.color if payload.use_embed else "",
+        "footer": payload.footer if payload.use_embed else "",
+    }
+    if payload.use_embed:
+        embed = {
+            "description": payload.content,
+            "color": COLOR_MAP.get(payload.color, COLOR_MAP["Blurple"]),
+        }
+        if payload.title:
+            embed["title"] = payload.title
+        if payload.footer:
+            embed["footer"] = {"text": payload.footer}
+        body["content"] = None
+        body["embeds"] = [embed]
+    else:
+        body["content"] = payload.content
+        body["embeds"] = []
+    discord_request("PATCH", f"/channels/{record['channel_id']}/messages/{message_id}", body)
+    upsert_message(guild_id, message_id, record)
+    return {"message_id": message_id, "guild_id": guild_id, "record": record}
+
+
+@app.patch("/api/reaction-roles/{guild_id}/{message_id}", dependencies=[Depends(require_admin)])
+def edit_reaction_role(guild_id: str, message_id: str, payload: ReactionRolePayload):
+    config = load_config()
+    existing = config.get("reaction_roles", {}).get(str(guild_id), {}).get(str(message_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Saved role panel not found")
+
+    mappings = []
+    for item in payload.mappings:
+        mappings.append(
+            {
+                "emoji": resolve_emoji_value(guild_id, item.emoji),
+                "role_id": str(item.role_id),
+                "role_name": item.role_name or str(item.role_id),
+            }
+        )
+    if payload.mode == "button":
+        mappings = mappings[:1]
+
+    mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in mappings)
+    footer_text = payload.description.strip()
+    description = (footer_text + "\n\n" if footer_text else "") + mapping_lines
+    mode = payload.mode if payload.mode in ("reaction", "button") else "dropdown"
+    channel_id = existing.get("channel_id", payload.channel_id)
+
+    body = {"allowed_mentions": {"parse": ["users", "roles"]}}
+    if payload.use_embed:
+        embed_payload = {
+            "description": description,
+            "color": COLOR_MAP.get(payload.color, COLOR_MAP["Blurple"]),
+        }
+        if payload.title.strip():
+            embed_payload["title"] = payload.title.strip()
+        body["content"] = None
+        body["embeds"] = [embed_payload]
+    else:
+        body["content"] = f"# {payload.title.strip()}\n{description}" if payload.title.strip() else description
+        body["embeds"] = []
+
+    if mode == "dropdown":
+        body["components"] = role_select_components(message_id, mappings)
+    elif mode == "button":
+        body["components"] = role_button_components(message_id, mappings)
+    else:
+        body["components"] = []
+
+    discord_request("PATCH", f"/channels/{channel_id}/messages/{message_id}", body)
+
+    failed_reactions = []
+    if mode == "reaction":
+        for item in mappings:
+            route_emoji = urllib.parse.quote(reaction_route_emoji(item["emoji"]), safe="")
+            try:
+                discord_request("PUT", f"/channels/{channel_id}/messages/{message_id}/reactions/{route_emoji}/@me")
+            except HTTPException as exc:
+                failed_reactions.append(f"{item['emoji']}: {exc.detail}")
+
+    record = {
+        "channel_id": channel_id,
+        "title": payload.title.strip(),
+        "panel_name": payload.panel_name.strip() or first_non_empty_line(payload.description) or "Untitled role panel",
+        "description": description,
+        "mode": mode,
+        "kind": "reaction_role",
+        "mappings": {item["emoji"]: item["role_id"] for item in mappings},
+    }
+    upsert_reaction_role(guild_id, message_id, record)
+    return {"message_id": message_id, "guild_id": guild_id, "record": record, "failed_reactions": failed_reactions}
+
+
+@app.patch("/api/saved", dependencies=[Depends(require_admin)])
+def update_saved(payload: SavedUpdatePayload):
+    config = load_config()
+    section = "messages" if payload.section == "messages" else "reaction_roles"
+    config.setdefault(section, {}).setdefault(str(payload.guild_id), {})[str(payload.message_id)] = payload.payload
+    save_config(config)
+    return {"ok": True}
+
+
+@app.delete("/api/saved/{section}/{guild_id}/{message_id}", dependencies=[Depends(require_admin)])
+def delete_saved(section: str, guild_id: str, message_id: str, delete_discord: bool = False):
+    config = load_config()
+    table = "messages" if section == "messages" else "reaction_roles"
+    item = config.get(table, {}).get(str(guild_id), {}).get(str(message_id))
+    if delete_discord and item:
+        discord_request("DELETE", f"/channels/{item.get('channel_id')}/messages/{message_id}")
+    delete_record(table, guild_id, message_id)
+    return {"ok": True}
+
+
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

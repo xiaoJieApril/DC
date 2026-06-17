@@ -1,0 +1,6 @@
+py-cord
+customtkinter
+python-dotenv
+requests
+fastapi
+uvicorn

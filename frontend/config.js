@@ -1,0 +1,1 @@
+window.DASHBOARD_API_BASE = window.DASHBOARD_API_BASE || "";

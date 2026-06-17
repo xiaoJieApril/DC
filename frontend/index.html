@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DC-Gra-vt-bot Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">DC-Gra-vt-bot</div>
+      <button class="nav active" data-view="overview">Overview</button>
+      <button class="nav" data-view="messages">Send Message</button>
+      <button class="nav" data-view="roles">Reaction Roles</button>
+      <button class="nav" data-view="saved">Saved</button>
+      <button class="nav" data-view="settings">Settings</button>
+      <button id="logoutBtn" class="nav danger">Logout</button>
+    </aside>
+
+    <main>
+      <section id="loginView" class="login">
+        <form id="loginForm" class="panel login-panel">
+          <h1>DC-Gra-vt-bot</h1>
+          <label>Username<input id="loginUser" autocomplete="username" value="admin" /></label>
+          <label>Password<input id="loginPass" type="password" autocomplete="current-password" /></label>
+          <button type="submit">Login</button>
+          <p id="loginError" class="error"></p>
+        </form>
+      </section>
+
+      <section id="appView" class="hidden">
+        <header>
+          <div>
+            <h1 id="viewTitle">Overview</h1>
+            <p id="viewSubtitle">Manage your Discord bot from the web.</p>
+          </div>
+          <button id="refreshBtn" class="secondary">Refresh</button>
+        </header>
+
+        <section id="overview" class="view">
+          <div class="stats">
+            <article class="stat"><span>Storage</span><strong>SQLite</strong></article>
+            <article class="stat"><span>Host</span><strong>Local + Tunnel</strong></article>
+            <article class="stat"><span>Dashboard</span><strong>Public HTTPS</strong></article>
+          </div>
+          <div class="panel">
+            <h2>Quick Actions</h2>
+            <div class="quick-actions">
+              <button data-jump="messages">Send Message</button>
+              <button data-jump="roles" class="secondary">Create Role Panel</button>
+              <button data-jump="saved" class="secondary">Manage Saved</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Recent Activity</h2>
+            <div id="recentList" class="recent-list"></div>
+          </div>
+          <div class="panel">
+            <h2>Health</h2>
+            <pre id="healthBox">Loading...</pre>
+          </div>
+        </section>
+
+        <section id="messages" class="view hidden">
+          <div class="panel">
+            <h2>Send Message</h2>
+            <div class="grid two">
+              <label>Server<select id="msgGuild"></select></label>
+              <label>Channel<select id="msgChannel"></select></label>
+            </div>
+            <label class="check"><input id="msgEmbed" type="checkbox" checked /> Send as embed</label>
+            <div class="grid three embed-fields">
+              <label>Title<input id="msgTitle" placeholder="Announcement" /></label>
+              <label>Color<select id="msgColor"></select></label>
+              <label>Footer<input id="msgFooter" placeholder="Optional footer" /></label>
+            </div>
+            <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>
+            <p class="muted">Mention: &lt;@user_id&gt; = member, &lt;@&amp;role_id&gt; = role, &lt;#channel_id&gt; = channel. Large heading: start a line with #.</p>
+            <div class="actions">
+              <button id="sendMsgBtn">Send Message</button>
+              <button id="updateMsgBtn" class="secondary hidden">Update Saved Message</button>
+              <button id="cancelMsgEditBtn" class="secondary hidden">Cancel Edit</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="roles" class="view hidden">
+          <div class="panel">
+            <h2>Reaction Role Panel</h2>
+            <div class="grid two">
+              <label>Server<select id="rrGuild"></select></label>
+              <label>Channel<select id="rrChannel"></select></label>
+            </div>
+            <div class="grid three">
+              <label>Mode<select id="rrMode"><option value="dropdown">Multi Select Dropdown</option><option value="button">One-Time Button</option><option value="reaction">Reaction</option></select></label>
+              <label>Panel Name<input id="rrPanelName" placeholder="Saved name only" /></label>
+              <label>Discord Title<input id="rrTitle" placeholder="Optional. Empty = no title" /></label>
+              <label>Color<select id="rrColor"></select></label>
+            </div>
+            <label class="check"><input id="rrEmbed" type="checkbox" checked /> Send as embed</label>
+            <label>Description<textarea id="rrDesc" rows="5">使用下拉式選單來更改名字顏色</textarea></label>
+            <p class="muted">Mention: &lt;@user_id&gt; = member, &lt;@&amp;role_id&gt; = role, &lt;#channel_id&gt; = channel. Large heading: start a line with #.</p>
+
+            <div class="mapper">
+              <label>Emoji<select id="rrEmoji"></select></label>
+              <input id="rrEmojiManual" placeholder="or type emoji / :name:" />
+              <label>Role<select id="rrRole"></select></label>
+              <button id="addMapBtn" class="secondary">Add Mapping</button>
+            </div>
+            <div id="mappingList" class="mapping-list"></div>
+            <div class="actions">
+              <button id="postRRBtn">Post Role Panel</button>
+              <button id="updateRRBtn" class="secondary hidden">Update Saved Panel</button>
+              <button id="cancelRREditBtn" class="secondary hidden">Cancel Edit</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="saved" class="view hidden">
+          <div class="panel">
+            <h2>Saved Messages & Panels</h2>
+            <div id="savedList" class="saved-list"></div>
+          </div>
+        </section>
+
+        <section id="settings" class="view hidden">
+          <div class="panel">
+            <h2>Settings</h2>
+            <label>API Base URL<input id="apiBaseInput" placeholder="https://api.example.com" /></label>
+            <button id="saveApiBaseBtn" class="secondary">Save API URL</button>
+            <p class="muted">Cloudflare Pages needs this to point to the Oracle VM dashboard API.</p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
