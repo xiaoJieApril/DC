@@ -791,6 +791,14 @@ class ReactionRolePage(ctk.CTkScrollableFrame):
             fg_color=BLURPLE,
             hover_color=BLURPLE_H,
         ).pack(side="left", padx=(0, 12))
+        self.rr_show_roles_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            style_row,
+            text="Show role names",
+            variable=self.rr_show_roles_var,
+            fg_color=BLURPLE,
+            hover_color=BLURPLE_H,
+        ).pack(side="left", padx=(0, 12))
         label(style_row, "Embed Color", size=12, color=TEXT_2).pack(side="left", padx=(0, 8))
         self.rr_color_var = ctk.StringVar(value="Blurple")
         ctk.CTkOptionMenu(
@@ -1090,8 +1098,12 @@ class ReactionRolePage(ctk.CTkScrollableFrame):
                 if mode == "button":
                     resolved_mappings = resolved_mappings[:1]
 
-                mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in resolved_mappings)
-                description = (base_desc + "\n\n" if base_desc else "") + mapping_lines
+                mapping_lines = (
+                    "\n".join(f"<@&{item['role_id']}>" for item in resolved_mappings)
+                    if self.rr_show_roles_var.get()
+                    else ""
+                )
+                description = ((base_desc + "\n\n") if base_desc and mapping_lines else base_desc) + mapping_lines
 
                 if self.rr_embed_var.get():
                     embed_payload = {
@@ -1137,6 +1149,7 @@ class ReactionRolePage(ctk.CTkScrollableFrame):
                     "title": title,
                     "panel_name": panel_name,
                     "description": description,
+                    "include_role_mentions": self.rr_show_roles_var.get(),
                     "mode": mode,
                     "kind": "reaction_role",
                     "mappings": {item["emoji"]: item["role_id"] for item in resolved_mappings},
@@ -1275,6 +1288,7 @@ class SavedPage(ctk.CTkScrollableFrame):
         page.msg_title.insert(0, item.get("title", ""))
         page.msg_desc.delete("1.0", "end")
         page.msg_desc.insert("1.0", description_note_only(item.get("description", "")) or DEFAULT_RR_DESCRIPTION)
+        page.rr_show_roles_var.set(item.get("include_role_mentions", True) is not False)
         if item.get("mode") == "reaction":
             page.mode_var.set(ROLE_MODE_REACTION)
         elif item.get("mode") == "button":

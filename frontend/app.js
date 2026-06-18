@@ -25,6 +25,14 @@ function toast(message) {
   setTimeout(() => box.classList.add("hidden"), 4500);
 }
 
+async function runAction(label, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    toast(`${label} failed: ${err.message}`);
+  }
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (state.accessToken) {
@@ -279,8 +287,8 @@ async function loadSaved() {
       </div>
     `;
     row.querySelector(".edit").addEventListener("click", () => editSaved(section, guildId, messageId, item));
-    row.querySelector(".record").addEventListener("click", () => deleteSaved(section, guildId, messageId, false));
-    row.querySelector(".delete").addEventListener("click", () => deleteSaved(section, guildId, messageId, true));
+    row.querySelector(".record").addEventListener("click", () => runAction("Delete record", () => deleteSaved(section, guildId, messageId, false)));
+    row.querySelector(".delete").addEventListener("click", () => runAction("Delete Discord message", () => deleteSaved(section, guildId, messageId, true)));
     list.appendChild(row);
   });
   renderRecent(rows);
@@ -334,6 +342,7 @@ async function editSaved(section, guildId, messageId, item) {
   $("rrPanelName").value = item.panel_name || "";
   $("rrTitle").value = item.title || "";
   $("rrMode").value = item.mode === "reaction" ? "reaction" : item.mode === "button" ? "button" : "dropdown";
+  $("rrShowRoleNames").checked = item.include_role_mentions !== false;
   $("rrDesc").value = descriptionNoteOnly(item.description) || "使用下拉式選單來更改名字顏色";
   state.mappings = Object.entries(item.mappings || {}).map(([emoji, roleId]) => {
     const role = (state.roles[guildId] || []).find((candidate) => candidate.id === roleId);
@@ -416,7 +425,7 @@ function wireEvents() {
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);
   });
 
-  $("sendMsgBtn").addEventListener("click", async () => {
+  $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {
       method: "POST",
       body: JSON.stringify({
@@ -431,9 +440,9 @@ function wireEvents() {
     toast(`Message sent: ${result.message_id}`);
     clearMessageForm();
     await loadSaved();
-  });
+  }));
 
-  $("updateMsgBtn").addEventListener("click", async () => {
+  $("updateMsgBtn").addEventListener("click", () => runAction("Update message", async () => {
     if (!state.editingMessage) return;
     const { guildId, messageId } = state.editingMessage;
     const result = await api(`/api/messages/${guildId}/${messageId}`, {
@@ -452,7 +461,7 @@ function wireEvents() {
     clearMessageForm();
     await loadSaved();
     setView("saved");
-  });
+  }));
 
   $("cancelMsgEditBtn").addEventListener("click", () => {
     setMessageEditMode(null);
@@ -467,7 +476,7 @@ function wireEvents() {
     }
   });
 
-  $("postRRBtn").addEventListener("click", async () => {
+  $("postRRBtn").addEventListener("click", () => runAction("Post role panel", async () => {
     const result = await api("/api/reaction-roles", {
       method: "POST",
       body: JSON.stringify({
@@ -477,6 +486,7 @@ function wireEvents() {
         description: $("rrDesc").value,
         mode: $("rrMode").value,
         use_embed: $("rrEmbed").checked,
+        include_role_mentions: $("rrShowRoleNames").checked,
         color: $("rrColor").value,
         mappings: state.mappings,
       }),
@@ -484,9 +494,9 @@ function wireEvents() {
     clearRoleForm();
     toast(`Role panel posted: ${result.message_id}`);
     await loadSaved();
-  });
+  }));
 
-  $("updateRRBtn").addEventListener("click", async () => {
+  $("updateRRBtn").addEventListener("click", () => runAction("Update role panel", async () => {
     if (!state.editingRolePanel) return;
     const { guildId, messageId } = state.editingRolePanel;
     const result = await api(`/api/reaction-roles/${guildId}/${messageId}`, {
@@ -498,6 +508,7 @@ function wireEvents() {
         description: $("rrDesc").value,
         mode: $("rrMode").value,
         use_embed: $("rrEmbed").checked,
+        include_role_mentions: $("rrShowRoleNames").checked,
         color: $("rrColor").value,
         mappings: state.mappings,
       }),
@@ -507,7 +518,7 @@ function wireEvents() {
     clearRoleForm();
     await loadSaved();
     setView("saved");
-  });
+  }));
 
   $("cancelRREditBtn").addEventListener("click", () => {
     setRoleEditMode(null);
