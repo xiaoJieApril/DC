@@ -350,12 +350,27 @@ function selectedRole() {
   return (state.roles[guildId] || []).find((role) => role.id === $("rrRole").value);
 }
 
-function addRoleMapping() {
+async function resolveTypedEmoji(value) {
+  const guildId = $("rrGuild").value;
+  if (!guildId || !value.trim()) return value.trim();
+  const result = await api(`/api/discord/guilds/${guildId}/emojis/resolve?value=${encodeURIComponent(value.trim())}`);
+  return result.resolved;
+}
+
+async function addRoleMapping() {
   const role = selectedRole();
   if (!role) return toast("Choose a role first.");
   const manual = $("rrEmojiManual").value.trim();
-  const emoji = manual || $("rrEmoji").value;
+  let emoji = manual || $("rrEmoji").value;
   if (!emoji) return toast("Choose or type an emoji.");
+  if (manual) {
+    try {
+      emoji = await resolveTypedEmoji(manual);
+    } catch (err) {
+      toast(`Emoji lookup failed: ${err.message}`);
+      return;
+    }
+  }
   if (state.mappings.some((item) => item.emoji === emoji)) return toast("That emoji is already mapped.");
   state.mappings.push({ emoji, role_id: role.id, role_name: role.name });
   $("rrEmojiManual").value = "";
@@ -444,11 +459,11 @@ function wireEvents() {
     toast("Message edit cancelled.");
   });
 
-  $("addMapBtn").addEventListener("click", addRoleMapping);
-  $("rrEmojiManual").addEventListener("keydown", (event) => {
+  $("addMapBtn").addEventListener("click", () => addRoleMapping());
+  $("rrEmojiManual").addEventListener("keydown", async (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      addRoleMapping();
+      await addRoleMapping();
     }
   });
 

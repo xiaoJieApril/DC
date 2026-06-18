@@ -304,6 +304,30 @@ def custom_emoji_value(emoji):
     return f"<{prefix}:{emoji['name']}:{emoji['id']}>"
 
 
+SHORTCODE_EMOJI = {
+    "white_flag": "🏳️",
+    "black_flag": "🏴",
+    "pirate_flag": "🏴‍☠️",
+    "checkered_flag": "🏁",
+    "triangular_flag_on_post": "🚩",
+    "crossed_flags": "🎌",
+    "rainbow_flag": "🏳️‍🌈",
+    "transgender_flag": "🏳️‍⚧️",
+    "united_nations": "🇺🇳",
+}
+
+
+def flag_shortcode_to_unicode(name):
+    normalized = name.lower()
+    if normalized in SHORTCODE_EMOJI:
+        return SHORTCODE_EMOJI[normalized]
+    if normalized.startswith("flag_"):
+        code = normalized.removeprefix("flag_")
+        if re.fullmatch(r"[a-z]{2}", code):
+            return "".join(chr(0x1F1E6 + ord(ch) - ord("a")) for ch in code)
+    return ""
+
+
 def emoji_name_from_text(value):
     raw = value.strip()
     if raw.startswith(":") and raw.endswith(":") and len(raw) > 2:
@@ -321,6 +345,9 @@ def resolve_emoji_value(api, guild_id, value):
         return raw
 
     target_name = emoji_name_from_text(raw)
+    shortcode = flag_shortcode_to_unicode(target_name)
+    if shortcode:
+        return shortcode
     for emoji in api.get_emojis(guild_id):
         if emoji.get("name", "").lower() == target_name:
             return custom_emoji_value(emoji)

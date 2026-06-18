@@ -9,7 +9,7 @@ import re
 
 import requests
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -212,6 +212,30 @@ def custom_emoji_value(emoji):
     return f"<{prefix}:{emoji['name']}:{emoji['id']}>"
 
 
+SHORTCODE_EMOJI = {
+    "white_flag": "🏳️",
+    "black_flag": "🏴",
+    "pirate_flag": "🏴‍☠️",
+    "checkered_flag": "🏁",
+    "triangular_flag_on_post": "🚩",
+    "crossed_flags": "🎌",
+    "rainbow_flag": "🏳️‍🌈",
+    "transgender_flag": "🏳️‍⚧️",
+    "united_nations": "🇺🇳",
+}
+
+
+def flag_shortcode_to_unicode(name):
+    normalized = name.lower()
+    if normalized in SHORTCODE_EMOJI:
+        return SHORTCODE_EMOJI[normalized]
+    if normalized.startswith("flag_"):
+        code = normalized.removeprefix("flag_")
+        if re.fullmatch(r"[a-z]{2}", code):
+            return "".join(chr(0x1F1E6 + ord(ch) - ord("a")) for ch in code)
+    return ""
+
+
 def emoji_name_from_text(value):
     raw = value.strip()
     if raw.startswith(":") and raw.endswith(":") and len(raw) > 2:
@@ -226,10 +250,45 @@ def resolve_emoji_value(guild_id, value):
     if parse_custom_emoji(raw) or not emoji_name_from_text(raw):
         return raw
     target = emoji_name_from_text(raw)
+    shortcode = flag_shortcode_to_unicode(target)
+    if shortcode:
+        return shortcode
     for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
         if emoji.get("name", "").lower() == target:
             return custom_emoji_value(emoji)
     return raw
+
+
+def resolve_emoji_detail(guild_id, value):
+    raw = value.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Emoji cannot be empty")
+    if parse_custom_emoji(raw):
+        return {"input": raw, "resolved": raw, "found": True, "kind": "custom"}
+    target = emoji_name_from_text(raw)
+    if target:
+        shortcode = flag_shortcode_to_unicode(target)
+        if shortcode:
+            return {"input": raw, "resolved": shortcode, "found": True, "kind": "unicode_shortcode", "name": target}
+        for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
+            if emoji.get("name", "").lower() == target:
+                resolved = custom_emoji_value(emoji)
+                return {
+                    "input": raw,
+                    "resolved": resolved,
+                    "found": True,
+                    "kind": "server",
+                    "name": emoji.get("name"),
+                    "id": emoji.get("id"),
+                    "animated": bool(emoji.get("animated")),
+                }
+        raise HTTPException(status_code=404, detail=f"Server emoji '{raw}' was not found")
+    if any(ord(ch) > 127 for ch in raw):
+        return {"input": raw, "resolved": raw, "found": True, "kind": "unicode"}
+    raise HTTPException(
+        status_code=400,
+        detail="Use a Unicode emoji, :server_emoji_name:, server_emoji_name, or <:name:id>.",
+    )
 
 
 def reaction_route_emoji(value):
@@ -345,6 +404,11 @@ def roles(guild_id: str):
 @app.get("/api/discord/guilds/{guild_id}/emojis", dependencies=[Depends(require_admin)])
 def emojis(guild_id: str):
     return discord_request("GET", f"/guilds/{guild_id}/emojis")
+
+
+@app.get("/api/discord/guilds/{guild_id}/emojis/resolve", dependencies=[Depends(require_admin)])
+def resolve_emoji(guild_id: str, value: str = Query(..., min_length=1)):
+    return resolve_emoji_detail(guild_id, value)
 
 
 @app.get("/api/saved", dependencies=[Depends(require_admin)])
