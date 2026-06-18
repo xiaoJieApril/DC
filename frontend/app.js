@@ -350,6 +350,19 @@ function selectedRole() {
   return (state.roles[guildId] || []).find((role) => role.id === $("rrRole").value);
 }
 
+function addRoleMapping() {
+  const role = selectedRole();
+  if (!role) return toast("Choose a role first.");
+  const manual = $("rrEmojiManual").value.trim();
+  const emoji = manual || $("rrEmoji").value;
+  if (!emoji) return toast("Choose or type an emoji.");
+  if (state.mappings.some((item) => item.emoji === emoji)) return toast("That emoji is already mapped.");
+  state.mappings.push({ emoji, role_id: role.id, role_name: role.name });
+  $("rrEmojiManual").value = "";
+  renderMappings();
+  toast(`Added ${emoji} → ${role.name}`);
+}
+
 function wireEvents() {
   document.querySelectorAll(".nav[data-view]").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
@@ -431,16 +444,12 @@ function wireEvents() {
     toast("Message edit cancelled.");
   });
 
-  $("addMapBtn").addEventListener("click", () => {
-    const role = selectedRole();
-    if (!role) return toast("Choose a role first.");
-    const manual = $("rrEmojiManual").value.trim();
-    const emoji = manual || $("rrEmoji").value;
-    if (!emoji) return toast("Choose or type an emoji.");
-    if (state.mappings.some((item) => item.emoji === emoji)) return toast("That emoji is already mapped.");
-    state.mappings.push({ emoji, role_id: role.id, role_name: role.name });
-    $("rrEmojiManual").value = "";
-    renderMappings();
+  $("addMapBtn").addEventListener("click", addRoleMapping);
+  $("rrEmojiManual").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addRoleMapping();
+    }
   });
 
   $("postRRBtn").addEventListener("click", async () => {

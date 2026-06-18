@@ -5,6 +5,7 @@ Focused on sending messages/embeds and creating reaction role messages.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -293,7 +294,9 @@ def component_emoji(value):
         if parsed["animated"]:
             payload["animated"] = True
         return payload
-    return {"name": value}
+    if any(ord(ch) > 127 for ch in value):
+        return {"name": value}
+    return None
 
 
 def custom_emoji_value(emoji):
@@ -305,6 +308,8 @@ def emoji_name_from_text(value):
     raw = value.strip()
     if raw.startswith(":") and raw.endswith(":") and len(raw) > 2:
         return raw[1:-1].lower()
+    if re.fullmatch(r"[A-Za-z0-9_]{2,32}", raw):
+        return raw.lower()
     return ""
 
 
@@ -332,7 +337,9 @@ def build_role_select_components(message_id, mappings):
         }
         emoji = item.get("emoji", "").strip()
         if emoji:
-            option["emoji"] = component_emoji(emoji)
+            emoji_payload = component_emoji(emoji)
+            if emoji_payload:
+                option["emoji"] = emoji_payload
         options.append(option)
 
     return [
@@ -364,7 +371,9 @@ def build_role_button_components(message_id, mappings):
     }
     emoji = item.get("emoji", "").strip()
     if emoji:
-        button_payload["emoji"] = component_emoji(emoji)
+        emoji_payload = component_emoji(emoji)
+        if emoji_payload:
+            button_payload["emoji"] = emoji_payload
     return [{"type": 1, "components": [button_payload]}]
 
 

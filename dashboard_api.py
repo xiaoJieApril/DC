@@ -5,6 +5,7 @@ import hashlib
 import base64
 import time
 import urllib.parse
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -215,6 +216,8 @@ def emoji_name_from_text(value):
     raw = value.strip()
     if raw.startswith(":") and raw.endswith(":") and len(raw) > 2:
         return raw[1:-1].lower()
+    if re.fullmatch(r"[A-Za-z0-9_]{2,32}", raw):
+        return raw.lower()
     return ""
 
 
@@ -243,7 +246,9 @@ def component_emoji(value):
         if parsed["animated"]:
             payload["animated"] = True
         return payload
-    return {"name": value}
+    if any(ord(ch) > 127 for ch in value):
+        return {"name": value}
+    return None
 
 
 def role_select_components(message_id, mappings):
@@ -255,7 +260,9 @@ def role_select_components(message_id, mappings):
             "description": f"Toggle {(item.get('role_name') or item['role_id'])}"[:100],
         }
         if item.get("emoji"):
-            option["emoji"] = component_emoji(item["emoji"])
+            emoji_payload = component_emoji(item["emoji"])
+            if emoji_payload:
+                option["emoji"] = emoji_payload
         options.append(option)
     return [
         {
@@ -285,7 +292,9 @@ def role_button_components(message_id, mappings):
         "custom_id": f"role_button:{message_id}:{item['role_id']}",
     }
     if item.get("emoji"):
-        button["emoji"] = component_emoji(item["emoji"])
+        emoji_payload = component_emoji(item["emoji"])
+        if emoji_payload:
+            button["emoji"] = emoji_payload
     return [{"type": 1, "components": [button]}]
 
 
