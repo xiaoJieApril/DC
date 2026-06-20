@@ -30,9 +30,9 @@ function ScpBase {
 
 $ssh = SshTarget
 $scp = ScpBase
-$archive = "dc-gra-vt-bot-deploy.zip"
+$archive = "dc-gra-vt-bot-exabytes-deploy.zip"
 
-Write-Host "Preparing deployment archive..." -ForegroundColor Green
+Write-Host "Preparing Exabytes deployment archive..." -ForegroundColor Green
 if (Test-Path $archive) {
     Remove-Item $archive -Force
 }
@@ -42,8 +42,9 @@ $items = @(
     "dashboard_api.py",
     "storage.py",
     "requirements.txt",
+    "requirements-phone.txt",
     ".env.example",
-    "DEPLOY_ORACLE.md",
+    "DEPLOY_EXABYTES_ZH.md",
     "frontend",
     "deploy"
 )
@@ -52,17 +53,17 @@ Compress-Archive -Path $items -DestinationPath $archive -Force
 
 Run-Local "$ssh `"sudo mkdir -p $RemoteDir && sudo chown $User:$User $RemoteDir`""
 Run-Local "$scp `"$archive`" $User@$HostName`:/tmp/$archive"
-Run-Local "$ssh `"sudo apt update && sudo apt install -y python3 python3-venv python3-pip unzip`""
-Run-Local "$ssh `"rm -rf $RemoteDir/*.py $RemoteDir/frontend $RemoteDir/deploy $RemoteDir/requirements.txt $RemoteDir/DEPLOY_ORACLE.md $RemoteDir/.env.example && unzip -o /tmp/$archive -d $RemoteDir`""
-Run-Local "$ssh `"cd $RemoteDir && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt`""
-Run-Local "$ssh `"sudo cp $RemoteDir/deploy/dc-gra-vt-bot.service /etc/systemd/system/dc-gra-vt-bot.service && sudo cp $RemoteDir/deploy/dc-gra-vt-dashboard.service /etc/systemd/system/dc-gra-vt-dashboard.service && sudo systemctl daemon-reload`""
+Run-Local "$ssh `"sudo apt update && sudo apt install -y python3 python3-venv python3-pip unzip curl`""
+Run-Local "$ssh `"find $RemoteDir -maxdepth 1 ! -name '.env' ! -name 'data' ! -name '.venv' ! -path $RemoteDir -exec rm -rf {} + && unzip -o /tmp/$archive -d $RemoteDir`""
+Run-Local "$ssh `"cd $RemoteDir && python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt`""
+Run-Local "$ssh `"sudo cp $RemoteDir/deploy/dc-gra-vt-dashboard.service /etc/systemd/system/dc-gra-vt-dashboard.service && sudo systemctl daemon-reload`""
 
 Write-Host "`nUpload complete." -ForegroundColor Green
-Write-Host "Next SSH into the VM and create $RemoteDir/.env from .env.example before starting services:" -ForegroundColor Yellow
+Write-Host "Next SSH into the Exabytes VPS and configure .env before starting services:" -ForegroundColor Yellow
 Write-Host "  $ssh"
 Write-Host "  cd $RemoteDir"
-Write-Host "  cp .env.example .env"
+Write-Host "  cp .env.example .env   # only if .env does not exist yet"
 Write-Host "  nano .env"
-Write-Host "  sudo systemctl enable --now dc-gra-vt-bot"
 Write-Host "  sudo systemctl enable --now dc-gra-vt-dashboard"
-Write-Host "  sudo journalctl -u dc-gra-vt-bot -f"
+Write-Host "  sudo journalctl -u dc-gra-vt-dashboard -f"
+Write-Host "Then open the dashboard and use Start Bot / End Bot from the Overview page."

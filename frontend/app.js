@@ -9,6 +9,7 @@ const state = {
   savedRows: [],
   editingMessage: null,
   editingRolePanel: null,
+  botStatus: null,
 };
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
@@ -134,7 +135,7 @@ async function checkLogin() {
 async function loadInitial() {
   fillColors();
   $("apiBaseInput").value = state.apiBase;
-  await Promise.all([loadHealth(), loadGuilds(), loadSaved()]);
+  await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved()]);
 }
 
 async function loadHealth() {
@@ -143,6 +144,52 @@ async function loadHealth() {
   } catch (err) {
     $("healthBox").textContent = err.message;
   }
+}
+
+function renderBotStatus(status) {
+  state.botStatus = status;
+  const badge = $("botStatusBadge");
+  const text = $("botStatusText");
+  const logBox = $("botLogBox");
+  badge.classList.toggle("running", !!status.running);
+  badge.classList.toggle("stopped", !status.running);
+  badge.textContent = status.running ? "Running" : "Stopped";
+  if (status.running) {
+    const started = status.started_at ? new Date(status.started_at * 1000).toLocaleString() : "unknown";
+    text.textContent = `PID ${status.pid || "unknown"} · Started ${started}`;
+  } else if (status.returncode !== null && status.returncode !== undefined) {
+    text.textContent = `Bot stopped. Last return code: ${status.returncode}`;
+  } else {
+    text.textContent = "Bot is not running.";
+  }
+  $("startBotBtn").disabled = !!status.running;
+  $("stopBotBtn").disabled = !status.running;
+  logBox.textContent = status.last_log || "No bot log yet.";
+}
+
+async function loadBotStatus() {
+  try {
+    renderBotStatus(await api("/api/bot/status"));
+  } catch (err) {
+    $("botStatusBadge").textContent = "Unknown";
+    $("botStatusBadge").classList.remove("running");
+    $("botStatusBadge").classList.add("stopped");
+    $("botStatusText").textContent = err.message;
+  }
+}
+
+async function startBot() {
+  const status = await api("/api/bot/start", { method: "POST" });
+  renderBotStatus(status);
+  toast("Bot started.");
+  await loadHealth();
+}
+
+async function stopBot() {
+  const status = await api("/api/bot/stop", { method: "POST" });
+  renderBotStatus(status);
+  toast("Bot stopped.");
+  await loadHealth();
 }
 
 async function loadGuilds() {
@@ -420,6 +467,8 @@ function wireEvents() {
   });
 
   $("refreshBtn").addEventListener("click", loadInitial);
+  $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
+  $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
   $("msgGuild").addEventListener("change", () => loadChannels("msg"));
   $("rrGuild").addEventListener("change", async () => {
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);

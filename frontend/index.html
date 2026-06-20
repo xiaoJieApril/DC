@@ -40,8 +40,22 @@
         <section id="overview" class="view">
           <div class="stats">
             <article class="stat"><span>Storage</span><strong>SQLite</strong></article>
-            <article class="stat"><span>Host</span><strong>Local + Tunnel</strong></article>
+            <article class="stat"><span>Host</span><strong>Exabytes VPS</strong></article>
             <article class="stat"><span>Dashboard</span><strong>Public HTTPS</strong></article>
+          </div>
+          <div class="panel">
+            <h2>Bot Control</h2>
+            <div class="bot-control">
+              <div>
+                <div id="botStatusBadge" class="status-badge stopped">Stopped</div>
+                <p id="botStatusText" class="muted">Bot is not running.</p>
+              </div>
+              <div class="actions">
+                <button id="startBotBtn">Start Bot</button>
+                <button id="stopBotBtn" class="delete">End Bot</button>
+              </div>
+            </div>
+            <pre id="botLogBox" class="log-box">No bot log yet.</pre>
           </div>
           <div class="panel">
             <h2>Quick Actions</h2>
@@ -130,7 +144,7 @@
             <h2>Settings</h2>
             <label>API Base URL<input id="apiBaseInput" placeholder="https://api.example.com" /></label>
             <button id="saveApiBaseBtn" class="secondary">Save API URL</button>
-            <p class="muted">Cloudflare Pages needs this to point to the Oracle VM dashboard API.</p>
+            <p class="muted">Static hosting needs this to point to the public dashboard API, for example your Exabytes VPS domain.</p>
           </div>
         </section>
       </section>

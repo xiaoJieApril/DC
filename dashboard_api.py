@@ -6,6 +6,10 @@ import base64
 import time
 import urllib.parse
 import re
+import subprocess
+import sys
+import threading
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -30,6 +34,13 @@ COLOR_MAP = {
     "White": 0xFFFFFF,
 }
 DEFAULT_RR_DESCRIPTION = "使用下拉式選單來更改名字顏色"
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR / "logs"
+BOT_LOG_PATH = LOG_DIR / "dashboard_bot.log"
+BOT_PID_PATH = LOG_DIR / "bot.pid"
+BOT_LOCK = threading.Lock()
+BOT_PROCESS = None
+BOT_STARTED_AT = 0.0
 
 
 def env(name, default=""):
@@ -101,6 +112,84 @@ class SavedUpdatePayload(BaseModel):
     guild_id: str
     message_id: str
     payload: dict
+
+
+def bot_returncode():
+    global BOT_PROCESS
+    if BOT_PROCESS is None:
+        return None
+    return BOT_PROCESS.poll()
+
+
+def tail_text(path, max_lines=80):
+    if not path.exists():
+        return ""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return "".join(handle.readlines()[-max_lines:])
+    except OSError:
+        return ""
+
+
+def bot_status_payload():
+    returncode = bot_returncode()
+    running = BOT_PROCESS is not None and returncode is None
+    return {
+        "running": running,
+        "pid": BOT_PROCESS.pid if BOT_PROCESS is not None and running else None,
+        "returncode": returncode,
+        "started_at": BOT_STARTED_AT if running else None,
+        "mode": "dashboard-managed",
+        "log_path": str(BOT_LOG_PATH),
+        "last_log": tail_text(BOT_LOG_PATH),
+    }
+
+
+def start_bot_process():
+    global BOT_PROCESS, BOT_STARTED_AT
+    if not env("DISCORD_TOKEN"):
+        raise HTTPException(status_code=500, detail="DISCORD_TOKEN is missing on the server")
+    with BOT_LOCK:
+        if BOT_PROCESS is not None and BOT_PROCESS.poll() is None:
+            return bot_status_payload()
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_handle = BOT_LOG_PATH.open("a", encoding="utf-8", errors="replace")
+        log_handle.write(f"\n--- Starting bot from dashboard at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        log_handle.flush()
+        try:
+        BOT_PROCESS = subprocess.Popen(
+                [sys.executable, "bot.py"],
+                cwd=str(BASE_DIR),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=os.environ.copy(),
+            )
+        finally:
+            log_handle.close()
+        BOT_STARTED_AT = time.time()
+        BOT_PID_PATH.write_text(str(BOT_PROCESS.pid), encoding="utf-8")
+        return bot_status_payload()
+
+
+def stop_bot_process():
+    global BOT_PROCESS, BOT_STARTED_AT
+    with BOT_LOCK:
+        if BOT_PROCESS is None or BOT_PROCESS.poll() is not None:
+            BOT_PROCESS = None
+            BOT_STARTED_AT = 0.0
+            return bot_status_payload()
+        BOT_PROCESS.terminate()
+        try:
+            BOT_PROCESS.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            BOT_PROCESS.kill()
+            BOT_PROCESS.wait(timeout=5)
+        status = bot_status_payload()
+        BOT_PROCESS = None
+        BOT_STARTED_AT = 0.0
+        BOT_PID_PATH.unlink(missing_ok=True)
+        return status
 
 
 def require_admin(request: Request):
@@ -360,7 +449,22 @@ def role_button_components(message_id, mappings):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "storage": "sqlite"}
+    return {"ok": True, "storage": "sqlite", "bot": bot_status_payload()}
+
+
+@app.get("/api/bot/status", dependencies=[Depends(require_admin)])
+def get_bot_status():
+    return bot_status_payload()
+
+
+@app.post("/api/bot/start", dependencies=[Depends(require_admin)])
+def start_bot():
+    return start_bot_process()
+
+
+@app.post("/api/bot/stop", dependencies=[Depends(require_admin)])
+def stop_bot():
+    return stop_bot_process()
 
 
 @app.post("/api/login")

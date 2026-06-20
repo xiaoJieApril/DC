@@ -89,6 +89,19 @@ button.secondary:hover {
   background: #3b3d44;
 }
 
+button.delete {
+  background: var(--red);
+}
+
+button.delete:hover {
+  background: #c03537;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 main {
   min-width: 0;
   padding: 28px 34px;
@@ -253,6 +266,43 @@ pre {
 
 .quick-actions button {
   width: auto;
+}
+
+.bot-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.status-badge.running {
+  background: rgba(59, 165, 93, 0.18);
+  color: #95e0b1;
+}
+
+.status-badge.stopped {
+  background: rgba(237, 66, 69, 0.16);
+  color: #ffb4b6;
+}
+
+.log-box {
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
 }
 
 .mapping-item,
