@@ -121,6 +121,48 @@ def bot_returncode():
     return BOT_PROCESS.poll()
 
 
+def bot_control_mode():
+    return env("BOT_CONTROL_MODE", "process").lower()
+
+
+def dashboard_bot_control_enabled():
+    return bot_control_mode() not in ("systemd", "disabled", "off", "false", "0")
+
+
+def systemd_bot_status():
+    service_name = env("SYSTEMD_BOT_SERVICE", "dc-gra-vt-bot")
+    try:
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", service_name],
+            cwd=str(BASE_DIR),
+            timeout=4,
+            check=False,
+        )
+        pid = subprocess.run(
+            ["systemctl", "show", service_name, "--property=MainPID", "--value"],
+            cwd=str(BASE_DIR),
+            timeout=4,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        raw_pid = (pid.stdout or "").strip()
+        return {
+            "running": active.returncode == 0,
+            "pid": int(raw_pid) if raw_pid.isdigit() and raw_pid != "0" else None,
+            "service": service_name,
+            "status_available": True,
+        }
+    except Exception as exc:
+        return {
+            "running": None,
+            "pid": None,
+            "service": service_name,
+            "status_available": False,
+            "status_error": str(exc),
+        }
+
+
 def tail_text(path, max_lines=80):
     if not path.exists():
         return ""
@@ -134,12 +176,18 @@ def tail_text(path, max_lines=80):
 def bot_status_payload():
     returncode = bot_returncode()
     running = BOT_PROCESS is not None and returncode is None
+    control_enabled = dashboard_bot_control_enabled()
+    systemd_status = systemd_bot_status() if bot_control_mode() == "systemd" else {}
     return {
-        "running": running,
-        "pid": BOT_PROCESS.pid if BOT_PROCESS is not None and running else None,
+        "running": systemd_status.get("running", running),
+        "pid": systemd_status.get("pid") if systemd_status else (BOT_PROCESS.pid if BOT_PROCESS is not None and running else None),
         "returncode": returncode,
         "started_at": BOT_STARTED_AT if running else None,
-        "mode": "dashboard-managed",
+        "mode": "dashboard-managed" if control_enabled else bot_control_mode(),
+        "control_enabled": control_enabled,
+        "service": systemd_status.get("service"),
+        "status_available": systemd_status.get("status_available", True),
+        "status_error": systemd_status.get("status_error", ""),
         "log_path": str(BOT_LOG_PATH),
         "last_log": tail_text(BOT_LOG_PATH),
     }
@@ -147,6 +195,8 @@ def bot_status_payload():
 
 def start_bot_process():
     global BOT_PROCESS, BOT_STARTED_AT
+    if not dashboard_bot_control_enabled():
+        raise HTTPException(status_code=409, detail="Bot is managed by systemd on this host")
     if not env("DISCORD_TOKEN"):
         raise HTTPException(status_code=500, detail="DISCORD_TOKEN is missing on the server")
     with BOT_LOCK:
@@ -157,7 +207,7 @@ def start_bot_process():
         log_handle.write(f"\n--- Starting bot from dashboard at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         log_handle.flush()
         try:
-        BOT_PROCESS = subprocess.Popen(
+            BOT_PROCESS = subprocess.Popen(
                 [sys.executable, "bot.py"],
                 cwd=str(BASE_DIR),
                 stdout=log_handle,
@@ -174,6 +224,8 @@ def start_bot_process():
 
 def stop_bot_process():
     global BOT_PROCESS, BOT_STARTED_AT
+    if not dashboard_bot_control_enabled():
+        raise HTTPException(status_code=409, detail="Bot is managed by systemd on this host")
     with BOT_LOCK:
         if BOT_PROCESS is None or BOT_PROCESS.poll() is not None:
             BOT_PROCESS = None

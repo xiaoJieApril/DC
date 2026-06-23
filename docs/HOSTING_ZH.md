@@ -6,11 +6,11 @@
 
 | 場景 | 文件 / 指令 | 備註 |
 | --- | --- | --- |
-| Exabytes VPS 24/7 正式 host | `DEPLOY_EXABYTES_ZH.md` | 目前推薦，電腦和手機可關機 |
-| AWS Lightsail 備用 host | `DEPLOY_AWS_LIGHTSAIL_ZH.md` | Exabytes 不可用時才看 |
-| Windows 本機測試 | `run_local_host.ps1` | 電腦關機 bot 就離線 |
-| 手機 Termux 備用 host | `start_phone_host.sh` | 不如 VPS 穩，只作臨時備用 |
-| 公開本機 dashboard | `start_public_tunnel.ps1` | Quick Tunnel URL 可能會變 |
+| Exabytes VPS 24/7 正式 host | `docs/DEPLOY_EXABYTES_ZH.md` | 目前推薦，電腦和手機可關機 |
+| AWS Lightsail 備用 host | `docs/DEPLOY_AWS_LIGHTSAIL_ZH.md` | Exabytes 不可用時才看 |
+| Windows 本機測試 | `scripts/run_local_host.ps1` | 電腦關機 bot 就離線 |
+| 手機 Termux 備用 host | `scripts/start_phone_host.sh` | 不如 VPS 穩，只作臨時備用 |
+| 公開本機 dashboard | `scripts/start_public_tunnel.ps1` | Quick Tunnel URL 可能會變 |
 
 ---
 
@@ -29,7 +29,7 @@
 完整步驟看：
 
 ```text
-DEPLOY_EXABYTES_ZH.md
+docs/DEPLOY_EXABYTES_ZH.md
 ```
 
 常用部署指令：
@@ -53,10 +53,12 @@ cd /opt/dc-gra-vt-bot
 cp .env.example .env
 nano .env
 sudo systemctl enable --now dc-gra-vt-dashboard
+sudo systemctl enable --now dc-gra-vt-bot
 sudo systemctl status dc-gra-vt-dashboard
+sudo systemctl status dc-gra-vt-bot
 ```
 
-然後打開 dashboard，在 Overview 按 `Start Bot` 啟動 bot，需要停止時按 `End Bot`。
+正式 24/7 host 由 systemd 自動保活。`.env` 建議設定 `BOT_CONTROL_MODE=systemd`，dashboard 會顯示 bot service 狀態，不會用 UI 重複啟動 bot。
 
 ---
 
@@ -66,7 +68,7 @@ sudo systemctl status dc-gra-vt-dashboard
 
 ```powershell
 cd "C:\Users\lolha\Desktop\All Document\app by myself\DC"
-.\run_local_host.ps1
+.\scripts\run_local_host.ps1
 ```
 
 成功後：
@@ -88,7 +90,7 @@ Invoke-WebRequest http://127.0.0.1:8000/api/health -UseBasicParsing
 
 ```powershell
 cd "C:\Users\lolha\Desktop\All Document\app by myself\DC"
-.\start_public_tunnel.ps1
+.\scripts\start_public_tunnel.ps1
 ```
 
 它會顯示：
@@ -144,7 +146,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 啟動：
 
 ```bash
-bash start_phone_host.sh
+bash scripts/start_phone_host.sh
 ```
 
 手機自己打開：
@@ -156,7 +158,7 @@ http://127.0.0.1:8000
 停止：
 
 ```bash
-bash stop_phone_host.sh
+bash scripts/stop_phone_host.sh
 ```
 
 手機 host 注意事項：
@@ -174,7 +176,7 @@ bash stop_phone_host.sh
 如果 Exabytes VPS 暫時不可用，可以改看：
 
 ```text
-DEPLOY_AWS_LIGHTSAIL_ZH.md
+docs/DEPLOY_AWS_LIGHTSAIL_ZH.md
 ```
 
 ---
@@ -184,6 +186,7 @@ DEPLOY_AWS_LIGHTSAIL_ZH.md
 本機/手機 hosting、公開 dashboard、舊雲端部署內容已合併或移除。現在主要看這兩份：
 
 ```text
-HOSTING_STEPS_ZH.md
-DEPLOY_EXABYTES_ZH.md
+README.md
+docs/HOSTING_ZH.md
+docs/DEPLOY_EXABYTES_ZH.md
 ```

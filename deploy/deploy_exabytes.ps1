@@ -44,7 +44,9 @@ $items = @(
     "requirements.txt",
     "requirements-phone.txt",
     ".env.example",
-    "DEPLOY_EXABYTES_ZH.md",
+    "README.md",
+    "docs",
+    "scripts",
     "frontend",
     "deploy"
 )
@@ -56,7 +58,7 @@ Run-Local "$scp `"$archive`" $User@$HostName`:/tmp/$archive"
 Run-Local "$ssh `"sudo apt update && sudo apt install -y python3 python3-venv python3-pip unzip curl`""
 Run-Local "$ssh `"find $RemoteDir -maxdepth 1 ! -name '.env' ! -name 'data' ! -name '.venv' ! -path $RemoteDir -exec rm -rf {} + && unzip -o /tmp/$archive -d $RemoteDir`""
 Run-Local "$ssh `"cd $RemoteDir && python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt`""
-Run-Local "$ssh `"sudo cp $RemoteDir/deploy/dc-gra-vt-dashboard.service /etc/systemd/system/dc-gra-vt-dashboard.service && sudo systemctl daemon-reload`""
+Run-Local "$ssh `"sudo cp $RemoteDir/deploy/dc-gra-vt-dashboard.service /etc/systemd/system/dc-gra-vt-dashboard.service && sudo cp $RemoteDir/deploy/dc-gra-vt-bot.service /etc/systemd/system/dc-gra-vt-bot.service && sudo systemctl daemon-reload`""
 
 Write-Host "`nUpload complete." -ForegroundColor Green
 Write-Host "Next SSH into the Exabytes VPS and configure .env before starting services:" -ForegroundColor Yellow
@@ -64,6 +66,7 @@ Write-Host "  $ssh"
 Write-Host "  cd $RemoteDir"
 Write-Host "  cp .env.example .env   # only if .env does not exist yet"
 Write-Host "  nano .env"
+Write-Host "  # For 24/7 production set BOT_CONTROL_MODE=systemd in .env"
 Write-Host "  sudo systemctl enable --now dc-gra-vt-dashboard"
+Write-Host "  sudo systemctl enable --now dc-gra-vt-bot"
 Write-Host "  sudo journalctl -u dc-gra-vt-dashboard -f"
-Write-Host "Then open the dashboard and use Start Bot / End Bot from the Overview page."

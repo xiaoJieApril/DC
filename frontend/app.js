@@ -153,17 +153,28 @@ function renderBotStatus(status) {
   const logBox = $("botLogBox");
   badge.classList.toggle("running", !!status.running);
   badge.classList.toggle("stopped", !status.running);
-  badge.textContent = status.running ? "Running" : "Stopped";
-  if (status.running) {
+  badge.textContent = status.running ? "Running" : status.mode === "systemd" ? "Systemd" : "Stopped";
+  if (status.mode === "systemd") {
+    const service = status.service || "dc-gra-vt-bot";
+    if (status.status_available === false) {
+      text.textContent = `Bot is managed by systemd, but status is unavailable: ${status.status_error || "unknown error"}`;
+    } else if (status.running) {
+      text.textContent = `${service} is active${status.pid ? ` · PID ${status.pid}` : ""}. Use systemctl for production control.`;
+    } else {
+      text.textContent = `${service} is not active. Use systemctl status ${service} on the VPS.`;
+    }
+  } else if (status.running) {
     const started = status.started_at ? new Date(status.started_at * 1000).toLocaleString() : "unknown";
     text.textContent = `PID ${status.pid || "unknown"} · Started ${started}`;
+  } else if (status.control_enabled === false) {
+    text.textContent = "Bot is managed by systemd on this host. Use systemctl for 24/7 production control.";
   } else if (status.returncode !== null && status.returncode !== undefined) {
     text.textContent = `Bot stopped. Last return code: ${status.returncode}`;
   } else {
     text.textContent = "Bot is not running.";
   }
-  $("startBotBtn").disabled = !!status.running;
-  $("stopBotBtn").disabled = !status.running;
+  $("startBotBtn").disabled = !!status.running || status.control_enabled === false;
+  $("stopBotBtn").disabled = !status.running || status.control_enabled === false;
   logBox.textContent = status.last_log || "No bot log yet.";
 }
 

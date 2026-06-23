@@ -26,13 +26,12 @@ python3 --version
 
 如果這些都可以，就是 VPS 路線，可以把 bot 和 dashboard 都放上去。
 
-現在的部署方式是：
+正式 24/7 部署方式是：
 
 ```text
-systemd 只長期跑 dashboard_api.py
-dashboard 頁面提供 Start Bot / End Bot
-按 Start Bot 後才啟動 bot.py
-按 End Bot 後停止 bot.py
+systemd 長期跑 dashboard_api.py
+systemd 長期跑 bot.py
+dashboard 顯示 bot service 狀態
 ```
 
 ### 只適合放 dashboard frontend 的情況
@@ -60,7 +59,7 @@ Exabytes VPS Ubuntu
   -> dashboard_api.py
   -> data/dc_gra_vt_bot.db
   -> systemd auto restart dashboard
-  -> dashboard UI controls bot start/stop
+  -> systemd auto restart bot
 
 Domain / subdomain
   -> Cloudflare Tunnel 或 Nginx reverse proxy
@@ -171,6 +170,8 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=你的_dashboard_密碼
 SESSION_SECRET=一串很長的隨機字串
 PUBLIC_FRONTEND_ORIGIN=https://你的_dashboard_domain
+BOT_CONTROL_MODE=systemd
+SYSTEMD_BOT_SERVICE=dc-gra-vt-bot
 ```
 
 生成 `SESSION_SECRET`：
@@ -209,11 +210,12 @@ Discord 看到 bot online 後，按 `Ctrl+C` 停止。
 
 ---
 
-## 7. 安裝 dashboard systemd service
+## 7. 安裝 systemd services
 
-只需要讓 dashboard API 自動開機啟動。bot 不再用 systemd 開，避免和 UI Start Bot 開出兩個 bot instance。
+正式 24/7 host 要讓 dashboard 和 bot 都自動開機啟動。`.env` 建議設定 `BOT_CONTROL_MODE=systemd`，避免 dashboard UI 開出第二個 bot instance。
 
 ```bash
+sudo cp /opt/dc-gra-vt-bot/deploy/dc-gra-vt-bot.service /etc/systemd/system/dc-gra-vt-bot.service
 sudo cp /opt/dc-gra-vt-bot/deploy/dc-gra-vt-dashboard.service /etc/systemd/system/dc-gra-vt-dashboard.service
 sudo systemctl daemon-reload
 ```
@@ -222,6 +224,7 @@ sudo systemctl daemon-reload
 
 ```bash
 sudo nano /etc/systemd/system/dc-gra-vt-dashboard.service
+sudo nano /etc/systemd/system/dc-gra-vt-bot.service
 ```
 
 把：
@@ -236,25 +239,28 @@ User=ubuntu
 
 ```bash
 sudo systemctl enable --now dc-gra-vt-dashboard
+sudo systemctl enable --now dc-gra-vt-bot
 ```
 
 檢查狀態：
 
 ```bash
 sudo systemctl status dc-gra-vt-dashboard
+sudo systemctl status dc-gra-vt-bot
 ```
 
 看 log：
 
 ```bash
 sudo journalctl -u dc-gra-vt-dashboard -f
+sudo journalctl -u dc-gra-vt-bot -f
 ```
 
-然後打開 dashboard，進入 Overview：
+然後打開 dashboard，進入 Overview，確認 bot service 是 running。
 
 ```text
-Start Bot = 啟動 Discord bot
-End Bot = 停止 Discord bot
+BOT_CONTROL_MODE=systemd 時，Start Bot / End Bot 會禁用
+正式開關 bot 請用 systemctl restart/stop/start dc-gra-vt-bot
 ```
 
 Bot log 會在 dashboard 內顯示，也會寫到：
@@ -373,9 +379,10 @@ sudo systemctl restart dc-gra-vt-dashboard
 
 ```bash
 sudo systemctl restart dc-gra-vt-dashboard
+sudo systemctl restart dc-gra-vt-bot
 ```
 
-Dashboard 重啟後，如果需要 bot online，重新在 Overview 按 `Start Bot`。
+Dashboard 重啟後，bot 會由 `dc-gra-vt-bot.service` 繼續保活。
 
 ---
 
@@ -406,15 +413,13 @@ curl http://127.0.0.1:8000/api/health
 Dashboard 可以登入後測：
 
 ```text
-Overview -> Start Bot
 Load guild/channel/role/emoji
 Send message
 Create reaction role
 Create multi-select dropdown role
-Overview -> End Bot
 Restart VPS
 Confirm dashboard auto restore
-Overview -> Start Bot again
+Confirm bot auto restore
 ```
 
 ---
