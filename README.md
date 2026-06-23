@@ -36,7 +36,7 @@ DISCORD_TOKEN=你的_discord_bot_token
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=你的_dashboard_密碼
 SESSION_SECRET=一串很長的隨機字串
-PUBLIC_FRONTEND_ORIGIN=https://你的_dashboard_domain
+PUBLIC_FRONTEND_ORIGIN=http://你的_Lightsail_Static_IP
 BOT_CONTROL_MODE=systemd
 SYSTEMD_BOT_SERVICE=dc-gra-vt-bot
 ```
@@ -94,16 +94,18 @@ sudo systemctl enable --now dc-gra-vt-dashboard
 sudo systemctl enable --now dc-gra-vt-bot
 ```
 
-固定 dashboard URL 建議使用：
+不用 domain 時，固定 dashboard URL 使用：
 
 ```text
-Lightsail/Exabytes Static IP -> DNS A record -> Nginx -> Certbot HTTPS
+Lightsail Static IP -> Nginx -> http://Static_IP
 ```
+
+之後如果要 HTTPS，再升級成 domain/subdomain + Certbot。
 
 詳細文件：
 
 - [Hosting 總覽](docs/HOSTING_ZH.md)
-- [AWS Lightsail 24/7 固定網址部署](docs/DEPLOY_AWS_LIGHTSAIL_ZH.md)
+- [AWS Lightsail 24/7 無 domain 部署](docs/DEPLOY_AWS_LIGHTSAIL_ZH.md)
 - [Exabytes VPS 部署](docs/DEPLOY_EXABYTES_ZH.md)
 
 ## Useful Commands
@@ -132,4 +134,4 @@ curl http://127.0.0.1:8000/api/health
 
 - 不要 commit `.env`、`data/`、`logs/`。
 - 正式 VPS 請設定 `BOT_CONTROL_MODE=systemd`，避免 dashboard UI 重複啟動 bot。
-- `trycloudflare.com` Quick Tunnel 只適合臨時測試，正式 URL 請用自己的 domain/subdomain。
+- `trycloudflare.com` Quick Tunnel 只適合臨時測試。沒有 domain 時，正式入口請用 Lightsail Static IP。

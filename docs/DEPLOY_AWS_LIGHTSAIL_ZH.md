@@ -1,6 +1,12 @@
-# DC-Gra-vt-bot AWS Lightsail 24/7 固定網址部署教學
+# DC-Gra-vt-bot AWS Lightsail 24/7 部署教學
 
-目標：讓 Discord bot 和 dashboard 在 AWS Lightsail 上 24/7 運行，並用固定 domain/subdomain 開 dashboard，不再使用會更換的 `trycloudflare.com` URL。
+目標：讓 Discord bot 和 dashboard 完全在 AWS Lightsail 上 24/7 運行，不使用 domain name。dashboard 固定入口使用 Lightsail Static IP，例如：
+
+```text
+http://你的_Lightsail_Static_IP
+```
+
+注意：沒有 domain name 時，不能申請正常可信任的 HTTPS certificate。這個方案是固定 IP + HTTP。若之後要 HTTPS，才需要 domain/subdomain + Certbot。
 
 ## 1. 建立 Lightsail Instance
 
@@ -20,7 +26,7 @@ Instance name: dc-gra-vt-bot
 Networking -> Create static IP -> Attach to dc-gra-vt-bot
 ```
 
-這個 Static IP 才是固定 IP。之後 DNS 要指向這個 IP。
+這個 Static IP 才是固定 IP。之後 dashboard 就用這個 IP 開。
 
 不要開：
 
@@ -32,30 +38,21 @@ Container service
 Extra instance
 ```
 
-## 2. Domain / DNS
+## 2. 固定 Dashboard URL
 
-建立 subdomain，例如：
-
-```text
-dashboard.gra-vt.my
-```
-
-在你的 DNS provider 裏新增：
+不使用 domain name 時，不需要 DNS provider。你的固定 dashboard URL 會是：
 
 ```text
-Type: A
-Name: dashboard
-Value: Lightsail Static IP
-Proxy: DNS only / 灰雲，如果用 Cloudflare
+http://Lightsail_Static_IP
 ```
 
-等 DNS 生效後可以檢查：
+例如 Static IP 是 `1.2.3.4`：
 
-```bash
-dig dashboard.gra-vt.my
+```text
+http://1.2.3.4
 ```
 
-回傳應該是 Lightsail Static IP。
+這個 URL 不會亂換，前提是你已經把 Static IP attach 到 Lightsail instance。
 
 ## 3. 安裝 runtime
 
@@ -64,7 +61,7 @@ dig dashboard.gra-vt.my
 ```bash
 sudo apt update
 sudo apt upgrade -y
-sudo apt install -y python3 python3-venv python3-pip git unzip curl nginx certbot python3-certbot-nginx
+sudo apt install -y python3 python3-venv python3-pip git unzip curl nginx
 ```
 
 Clone repo：
@@ -101,7 +98,7 @@ DISCORD_TOKEN=你的_discord_bot_token
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=你的_dashboard_密碼
 SESSION_SECRET=一串很長的隨機字串
-PUBLIC_FRONTEND_ORIGIN=https://dashboard.gra-vt.my
+PUBLIC_FRONTEND_ORIGIN=http://你的_Lightsail_Static_IP
 BOT_CONTROL_MODE=systemd
 ```
 
@@ -194,18 +191,18 @@ sudo systemctl status dc-gra-vt-dashboard
 sudo systemctl status dc-gra-vt-bot
 ```
 
-## 8. 設定 Nginx 固定網址
+## 8. 設定 Nginx 固定 IP 入口
 
 ```bash
 sudo nano /etc/nginx/sites-available/dc-gra-vt-dashboard
 ```
 
-貼上，記得把 domain 改成你的：
+貼上：
 
 ```nginx
 server {
     listen 80;
-    server_name dashboard.gra-vt.my;
+    server_name _;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -226,13 +223,13 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-申請 HTTPS：
+之後 dashboard 就是：
 
-```bash
-sudo certbot --nginx -d dashboard.gra-vt.my
+```text
+http://你的_Lightsail_Static_IP
 ```
 
-Certbot 會自動設定 HTTPS 和憑證續期。
+如果之後買 domain，再改成 domain + Certbot HTTPS。
 
 ## 9. Lightsail firewall
 
@@ -241,10 +238,9 @@ Lightsail instance 的 Networking / Firewall 開：
 ```text
 TCP 22   SSH
 TCP 80   HTTP
-TCP 443  HTTPS
 ```
 
-不需要公開 `8000`，因為 Nginx 會在 VPS 內部轉發到 `127.0.0.1:8000`。
+不使用 domain/HTTPS 時不需要開 `443`。也不需要公開 `8000`，因為 Nginx 會在 VPS 內部轉發到 `127.0.0.1:8000`。
 
 ## 10. 更新 code
 
@@ -279,7 +275,7 @@ sudo tail -n 100 /var/log/nginx/error.log
 
 ```bash
 curl http://127.0.0.1:8000/api/health
-curl -I https://dashboard.gra-vt.my
+curl -I http://你的_Lightsail_Static_IP
 ```
 
 資源檢查：
@@ -302,14 +298,14 @@ sudo reboot
 ```bash
 sudo systemctl status dc-gra-vt-dashboard
 sudo systemctl status dc-gra-vt-bot
-curl -I https://dashboard.gra-vt.my
+curl -I http://你的_Lightsail_Static_IP
 ```
 
 成功標準：
 
 ```text
 bot 自動 online
-dashboard URL 不變
+dashboard URL 不變，仍然是 http://Lightsail_Static_IP
 dashboard 可登入
 兩個 service 都是 active (running)
 ```
@@ -323,6 +319,21 @@ cp ~/DC/data/dc_gra_vt_bot.db ~/backups/dc_gra_vt_bot_$(date +%Y%m%d_%H%M%S).db
 
 不要把 `.env` commit 到 GitHub。
 
-## 14. Quick Tunnel 只作臨時測試
+## 14. Optional: 之後升級成 domain + HTTPS
+
+如果之後你買 domain/subdomain，可以把 DNS A record 指去 Lightsail Static IP，然後把 Nginx `server_name _;` 改成你的 domain，例如：
+
+```nginx
+server_name dashboard.gra-vt.my;
+```
+
+再安裝 certbot：
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d dashboard.gra-vt.my
+```
+
+## 15. Quick Tunnel 只作臨時測試
 
 不要把 `trycloudflare.com` 當正式 dashboard URL。Quick Tunnel 每次重開可能換網址，而且手動 SSH session 斷掉後 tunnel 也可能停止。
