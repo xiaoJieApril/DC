@@ -57,7 +57,7 @@ Exabytes VPS Ubuntu
   -> /opt/dc-gra-vt-bot
   -> bot.py
   -> dashboard_api.py
-  -> data/dc_gra_vt_bot.db
+  -> config.json
   -> systemd auto restart dashboard
   -> systemd auto restart bot
 
@@ -388,17 +388,17 @@ Dashboard 重啟後，bot 會由 `dc-gra-vt-bot.service` 繼續保活。
 
 ## 11. 備份資料
 
-SQLite 資料在：
+JSON 資料在：
 
 ```text
-/opt/dc-gra-vt-bot/data/dc_gra_vt_bot.db
+/opt/dc-gra-vt-bot/config.json
 ```
 
 手動備份：
 
 ```bash
 mkdir -p ~/dc-gra-vt-backups
-cp /opt/dc-gra-vt-bot/data/dc_gra_vt_bot.db ~/dc-gra-vt-backups/dc_gra_vt_bot_$(date +%Y%m%d_%H%M%S).db
+cp /opt/dc-gra-vt-bot/config.json ~/dc-gra-vt-backups/config_$(date +%Y%m%d_%H%M%S).json
 ```
 
 ---

@@ -384,11 +384,11 @@ dashboard 可登入
 兩個 service 都是 active (running)
 ```
 
-## 13. 備份 SQLite
+## 13. 備份 JSON 資料
 
 ```bash
 mkdir -p ~/backups
-cp ~/DC/data/dc_gra_vt_bot.db ~/backups/dc_gra_vt_bot_$(date +%Y%m%d_%H%M%S).db
+cp ~/DC/config.json ~/backups/config_$(date +%Y%m%d_%H%M%S).json
 ```
 
 不要把 `.env` commit 到 GitHub。

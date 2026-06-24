@@ -1,6 +1,6 @@
 # DC-Gra-vt-bot
 
-DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、message/embed 發送、reaction role、dropdown role、button role panel，以及 SQLite 儲存。
+DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、message/embed 發送、reaction role、dropdown role、button role panel，以及 JSON 檔案儲存。
 
 ## Project Structure
 
@@ -8,13 +8,13 @@ DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、messa
 .
 ├─ bot.py                         # Discord bot runtime
 ├─ dashboard_api.py               # FastAPI dashboard API + static frontend host
-├─ storage.py                     # SQLite/config storage layer
+├─ storage.py                     # JSON config storage layer
 ├─ gui.py                         # 舊 CustomTkinter GUI，本機備用
 ├─ frontend/                      # Dashboard HTML/CSS/JS
 ├─ deploy/                        # VPS systemd services + deploy helper
 ├─ docs/                          # 中文 hosting/deployment 文件
 ├─ scripts/                       # 本機/手機啟動腳本
-├─ data/                          # SQLite data, ignored by git
+├─ config.json                    # Saved messages and reaction role data
 ├─ logs/                          # Runtime logs, ignored by git
 ├─ requirements.txt               # Full local/server dependencies
 ├─ requirements-phone.txt         # Termux/phone lightweight dependencies
@@ -150,27 +150,15 @@ bash scripts/install_lightsail_services.sh
 curl http://127.0.0.1:8000/api/health
 ```
 
-## Supabase Storage
+## JSON Storage
 
-預設會使用本機 SQLite。若要在 Orihost/free container 上避免重啟後資料不穩，可以把 saved messages 和 reaction roles 存到 Supabase。
+Saved messages 和 reaction roles 會存到專案根目錄的 `config.json`。Orihost/free container 上請確認 `config.json` 有保留在 Files 裡；如果重新 clone repo 或清空檔案，資料也會跟著消失。
 
-1. 在 Supabase SQL Editor 執行：
-
-```text
-docs/SUPABASE_STORAGE.sql
-```
-
-2. 在伺服器 `.env` 加上：
+伺服器 `.env` 建議使用：
 
 ```env
-STORAGE_BACKEND=supabase
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-SUPABASE_MESSAGES_TABLE=dc_messages
-SUPABASE_REACTION_ROLES_TABLE=dc_reaction_roles
+STORAGE_BACKEND=json
 ```
-
-`SUPABASE_SERVICE_ROLE_KEY` 只能放在伺服器 `.env`，不要放到前端或公開 repo。
 
 ## Notes
 
