@@ -150,6 +150,28 @@ bash scripts/install_lightsail_services.sh
 curl http://127.0.0.1:8000/api/health
 ```
 
+## Supabase Storage
+
+預設會使用本機 SQLite。若要在 Orihost/free container 上避免重啟後資料不穩，可以把 saved messages 和 reaction roles 存到 Supabase。
+
+1. 在 Supabase SQL Editor 執行：
+
+```text
+docs/SUPABASE_STORAGE.sql
+```
+
+2. 在伺服器 `.env` 加上：
+
+```env
+STORAGE_BACKEND=supabase
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+SUPABASE_MESSAGES_TABLE=dc_messages
+SUPABASE_REACTION_ROLES_TABLE=dc_reaction_roles
+```
+
+`SUPABASE_SERVICE_ROLE_KEY` 只能放在伺服器 `.env`，不要放到前端或公開 repo。
+
 ## Notes
 
 - 不要 commit `.env`、`data/`、`logs/`。

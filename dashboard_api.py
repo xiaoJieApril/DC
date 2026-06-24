@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from storage import delete_record, init_db, load_config, save_config, upsert_message, upsert_reaction_role
+from storage import delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_reaction_role
 
 
 load_dotenv()
@@ -501,7 +501,7 @@ def role_button_components(message_id, mappings):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "storage": "sqlite", "bot": bot_status_payload()}
+    return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
 
 
 @app.get("/api/bot/status", dependencies=[Depends(require_admin)])

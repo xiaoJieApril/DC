@@ -1,8 +1,12 @@
 import json
+import os
 import sqlite3
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,6 +24,151 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+load_dotenv()
+
+
+def env(name, default=""):
+    return os.getenv(name, default).strip()
+
+
+def storage_backend():
+    if env("STORAGE_BACKEND").lower() == "supabase":
+        return "supabase"
+    if env("SUPABASE_URL") and env("SUPABASE_SERVICE_ROLE_KEY"):
+        return "supabase"
+    return "sqlite"
+
+
+def storage_name():
+    return storage_backend()
+
+
+def using_supabase():
+    return storage_backend() == "supabase"
+
+
+def supabase_url():
+    return env("SUPABASE_URL").rstrip("/")
+
+
+def supabase_key():
+    return env("SUPABASE_SERVICE_ROLE_KEY")
+
+
+def supabase_table(section):
+    if section == "messages":
+        return env("SUPABASE_MESSAGES_TABLE", "dc_messages")
+    return env("SUPABASE_REACTION_ROLES_TABLE", "dc_reaction_roles")
+
+
+def supabase_headers(prefer=None):
+    key = supabase_key()
+    if not supabase_url() or not key:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for Supabase storage")
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    return headers
+
+
+def supabase_request(method, section, params=None, payload=None, prefer=None):
+    url = f"{supabase_url()}/rest/v1/{supabase_table(section)}"
+    response = requests.request(
+        method,
+        url,
+        headers=supabase_headers(prefer=prefer),
+        params=params or {},
+        json=payload,
+        timeout=15,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Supabase {section} request failed: {response.status_code} {response.text}")
+    if response.text:
+        return response.json()
+    return None
+
+
+def supabase_load_config():
+    config = deepcopy(DEFAULT_CONFIG)
+    for section in ("messages", "reaction_roles"):
+        rows = supabase_request(
+            "GET",
+            section,
+            params={
+                "select": "guild_id,message_id,payload",
+                "order": "updated_at.desc",
+            },
+        ) or []
+        for row in rows:
+            payload = row.get("payload") or {}
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            config[section].setdefault(str(row["guild_id"]), {})[str(row["message_id"])] = payload
+    return config
+
+
+def supabase_upsert(section, guild_id, message_id, payload):
+    payload = dict(payload)
+    now = utc_now()
+    row = {
+        "guild_id": str(guild_id),
+        "message_id": str(message_id),
+        "channel_id": str(payload.get("channel_id", "")),
+        "payload": payload,
+        "updated_at": now,
+    }
+    supabase_request(
+        "POST",
+        section,
+        params={"on_conflict": "guild_id,message_id"},
+        payload=[row],
+        prefer="resolution=merge-duplicates",
+    )
+
+
+def supabase_save_config(data):
+    for section in ("messages", "reaction_roles"):
+        supabase_request("DELETE", section, params={"guild_id": "not.is.null"})
+        rows = []
+        now = utc_now()
+        for guild_id, messages in data.get(section, {}).items():
+            for message_id, payload in messages.items():
+                payload = dict(payload)
+                rows.append(
+                    {
+                        "guild_id": str(guild_id),
+                        "message_id": str(message_id),
+                        "channel_id": str(payload.get("channel_id", "")),
+                        "payload": payload,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
+        if rows:
+            supabase_request(
+                "POST",
+                section,
+                params={"on_conflict": "guild_id,message_id"},
+                payload=rows,
+                prefer="resolution=merge-duplicates",
+            )
+
+
+def supabase_delete_record(section, guild_id, message_id):
+    supabase_request(
+        "DELETE",
+        section,
+        params={
+            "guild_id": f"eq.{guild_id}",
+            "message_id": f"eq.{message_id}",
+        },
+    )
+
+
 def connect():
     DATA_DIR.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -28,6 +177,8 @@ def connect():
 
 
 def init_db():
+    if using_supabase():
+        return
     with connect() as conn:
         conn.executescript(
             """
@@ -114,6 +265,8 @@ def migrate_config_json():
 
 
 def load_config():
+    if using_supabase():
+        return supabase_load_config()
     init_db()
     config = deepcopy(DEFAULT_CONFIG)
     with connect() as conn:
@@ -125,6 +278,9 @@ def load_config():
 
 
 def save_config(data):
+    if using_supabase():
+        supabase_save_config(data)
+        return
     init_db()
     now = utc_now()
     with connect() as conn:
@@ -173,12 +329,18 @@ def load_config_without_migration():
 
 
 def upsert_message(guild_id, message_id, payload):
+    if using_supabase():
+        supabase_upsert("messages", guild_id, message_id, payload)
+        return
     config = load_config()
     config.setdefault("messages", {}).setdefault(str(guild_id), {})[str(message_id)] = dict(payload)
     save_config(config)
 
 
 def upsert_reaction_role(guild_id, message_id, payload):
+    if using_supabase():
+        supabase_upsert("reaction_roles", guild_id, message_id, payload)
+        return
     config = load_config()
     config.setdefault("reaction_roles", {}).setdefault(str(guild_id), {})[str(message_id)] = dict(payload)
     save_config(config)
@@ -186,6 +348,9 @@ def upsert_reaction_role(guild_id, message_id, payload):
 
 def delete_record(section, guild_id, message_id):
     table = "messages" if section == "messages" else "reaction_roles"
+    if using_supabase():
+        supabase_delete_record(table, guild_id, message_id)
+        return
     init_db()
     with connect() as conn:
         conn.execute(
