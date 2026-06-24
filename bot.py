@@ -642,5 +642,6 @@ if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN", "").strip()
     if not token:
         print("[ERROR] DISCORD_TOKEN not found in .env")
+        raise SystemExit(1)
     else:
         bot.run(token)

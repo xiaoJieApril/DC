@@ -5,10 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/dc-gra-vt-bot
-EnvironmentFile=/opt/dc-gra-vt-bot/.env
-ExecStart=/opt/dc-gra-vt-bot/.venv/bin/python bot.py
-Restart=always
+WorkingDirectory=/home/ubuntu/DC
+EnvironmentFile=/home/ubuntu/DC/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -f /home/ubuntu/DC/.env
+ExecStartPre=/usr/bin/test -x /home/ubuntu/DC/.venv/bin/python
+ExecStart=/home/ubuntu/DC/.venv/bin/python -u bot.py
+Restart=on-failure
 RestartSec=8
 User=ubuntu
 

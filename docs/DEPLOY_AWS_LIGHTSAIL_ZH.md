@@ -145,8 +145,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/ubuntu/DC
 EnvironmentFile=/home/ubuntu/DC/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -f /home/ubuntu/DC/.env
+ExecStartPre=/usr/bin/test -x /home/ubuntu/DC/.venv/bin/uvicorn
 ExecStart=/home/ubuntu/DC/.venv/bin/uvicorn dashboard_api:app --host 127.0.0.1 --port 8000
-Restart=always
+Restart=on-failure
 RestartSec=8
 User=ubuntu
 
@@ -172,8 +175,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/ubuntu/DC
 EnvironmentFile=/home/ubuntu/DC/.env
-ExecStart=/home/ubuntu/DC/.venv/bin/python bot.py
-Restart=always
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -f /home/ubuntu/DC/.env
+ExecStartPre=/usr/bin/test -x /home/ubuntu/DC/.venv/bin/python
+ExecStart=/home/ubuntu/DC/.venv/bin/python -u bot.py
+Restart=on-failure
 RestartSec=8
 User=ubuntu
 
@@ -189,6 +195,13 @@ sudo systemctl enable --now dc-gra-vt-dashboard
 sudo systemctl enable --now dc-gra-vt-bot
 sudo systemctl status dc-gra-vt-dashboard
 sudo systemctl status dc-gra-vt-bot
+```
+
+如果你是從 repo 更新部署，也可以用腳本自動安裝/覆蓋兩個 service，避免 `/etc/systemd/system/` 還留著舊路徑：
+
+```bash
+cd ~/DC
+bash scripts/install_lightsail_services.sh
 ```
 
 ## 8. 設定 Nginx 固定 IP 入口
@@ -286,6 +299,67 @@ df -h
 ```
 
 如果 service 一直重啟，先看 `journalctl`。如果是記憶體太低，可以考慮升級 Lightsail plan。
+
+也可以直接跑 repo 內的診斷腳本，會一次列出 service 狀態、最後 log、`.env`、venv、port、Nginx、記憶體和硬碟狀態：
+
+```bash
+cd ~/DC
+bash scripts/diagnose_lightsail.sh
+```
+
+常見關掉原因：
+
+- service 裏的 `WorkingDirectory` / `EnvironmentFile` 指到錯路徑，例如 repo 在 `/home/ubuntu/DC`，但 service 還在找 `/opt/dc-gra-vt-bot`
+- `.env` 沒有 `DISCORD_TOKEN` 或 token 已失效
+- Discord Developer Portal 沒開需要的 privileged intents，例如 Members Intent / Message Content Intent
+- `.venv` 沒建好或 dependencies 沒裝完整
+- 低記憶體造成 process 被 kill
+
+### Browser SSH 顯示 `UPSTREAM_ERROR [515]`
+
+這通常代表 Lightsail 的瀏覽器 SSH proxy 連不上 instance 內的 SSH service，或 instance 當下資源卡住。它不一定是 bot code 的錯，但 bot/dashboard restart loop 或記憶體不足可能會讓小機器連 SSH 都變得不穩。
+
+Reboot 後一進 SSH，先暫停 bot/dashboard，避免它又把 instance 打滿：
+
+```bash
+sudo systemctl stop dc-gra-vt-bot dc-gra-vt-dashboard
+```
+
+然後立刻抓原因：
+
+```bash
+cd ~/DC
+bash scripts/diagnose_lightsail.sh
+```
+
+重點看這幾類：
+
+```bash
+sudo systemctl status ssh --no-pager
+sudo journalctl -u ssh -n 120 --no-pager
+sudo journalctl -k -n 200 --no-pager | grep -Ei 'oom|killed|out of memory|segfault|blocked'
+free -h
+df -h
+sudo systemctl status dc-gra-vt-bot dc-gra-vt-dashboard --no-pager
+```
+
+如果看到 OOM / killed process，先加 swap：
+
+```bash
+sudo fallocate -l 1G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=1024
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -h
+```
+
+如果確認服務設定已修好，再重啟：
+
+```bash
+cd ~/DC
+bash scripts/install_lightsail_services.sh
+```
 
 ## 12. Reboot 測試
 

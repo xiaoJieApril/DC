@@ -124,6 +124,26 @@ sudo journalctl -u dc-gra-vt-dashboard -f
 sudo journalctl -u dc-gra-vt-bot -f
 ```
 
+Lightsail 一次性診斷：
+
+```bash
+bash scripts/diagnose_lightsail.sh
+```
+
+如果 Lightsail browser SSH 顯示 `UPSTREAM_ERROR [515]`，reboot 後先停服務再診斷：
+
+```bash
+sudo systemctl stop dc-gra-vt-bot dc-gra-vt-dashboard
+cd ~/DC
+bash scripts/diagnose_lightsail.sh
+```
+
+套用/更新 Lightsail systemd service：
+
+```bash
+bash scripts/install_lightsail_services.sh
+```
+
 健康檢查：
 
 ```bash
