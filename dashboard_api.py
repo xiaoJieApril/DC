@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from storage import delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_reaction_role
+from storage import append_audit_log, delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_reaction_role
 
 
 load_dotenv()
@@ -300,6 +300,10 @@ def require_logged_in(request: Request):
     return True
 
 
+def request_actor():
+    return env("ADMIN_USERNAME", "admin") or "admin"
+
+
 def token():
     value = env("DISCORD_TOKEN")
     if not value:
@@ -573,6 +577,11 @@ def saved():
     return load_config()
 
 
+@app.get("/api/audit-logs", dependencies=[Depends(require_admin)])
+def audit_logs(limit: int = Query(50, ge=1, le=100)):
+    return load_config().get("audit_logs", [])[:limit]
+
+
 @app.post("/api/messages", dependencies=[Depends(require_admin)])
 def send_message(payload: MessagePayload):
     if not payload.channel_id.isdigit():
@@ -607,6 +616,14 @@ def send_message(payload: MessagePayload):
     body["allowed_mentions"] = {"parse": ["users", "roles"]}
     result = discord_request("POST", f"/channels/{payload.channel_id}/messages", body)
     upsert_message(guild_id, result["id"], record)
+    append_audit_log(
+        "sent",
+        "messages",
+        guild_id,
+        result["id"],
+        {"channel_id": payload.channel_id, "title": record["title"], "type": record["type"]},
+        request_actor(),
+    )
     return {"message_id": result["id"], "guild_id": guild_id, "record": record}
 
 
@@ -690,6 +707,14 @@ def create_reaction_role(payload: ReactionRolePayload):
         "mappings": {item["emoji"]: item["role_id"] for item in mappings},
     }
     upsert_reaction_role(guild_id, message_id, record)
+    append_audit_log(
+        "posted",
+        "reaction_roles",
+        guild_id,
+        message_id,
+        {"channel_id": payload.channel_id, "panel_name": record["panel_name"], "mode": mode},
+        request_actor(),
+    )
     return {"message_id": message_id, "guild_id": guild_id, "record": record, "failed_reactions": failed_reactions}
 
 
@@ -724,6 +749,14 @@ def edit_message(guild_id: str, message_id: str, payload: MessagePayload):
         body["embeds"] = []
     discord_request("PATCH", f"/channels/{record['channel_id']}/messages/{message_id}", body)
     upsert_message(guild_id, message_id, record)
+    append_audit_log(
+        "updated",
+        "messages",
+        guild_id,
+        message_id,
+        {"channel_id": record["channel_id"], "title": record["title"], "type": record["type"]},
+        request_actor(),
+    )
     return {"message_id": message_id, "guild_id": guild_id, "record": record}
 
 
@@ -795,6 +828,14 @@ def edit_reaction_role(guild_id: str, message_id: str, payload: ReactionRolePayl
         "mappings": {item["emoji"]: item["role_id"] for item in mappings},
     }
     upsert_reaction_role(guild_id, message_id, record)
+    append_audit_log(
+        "updated",
+        "reaction_roles",
+        guild_id,
+        message_id,
+        {"channel_id": channel_id, "panel_name": record["panel_name"], "mode": mode},
+        request_actor(),
+    )
     return {"message_id": message_id, "guild_id": guild_id, "record": record, "failed_reactions": failed_reactions}
 
 
@@ -804,6 +845,7 @@ def update_saved(payload: SavedUpdatePayload):
     section = "messages" if payload.section == "messages" else "reaction_roles"
     config.setdefault(section, {}).setdefault(str(payload.guild_id), {})[str(payload.message_id)] = payload.payload
     save_config(config)
+    append_audit_log("updated_record", section, payload.guild_id, payload.message_id, {}, request_actor())
     return {"ok": True}
 
 
@@ -815,6 +857,14 @@ def delete_saved(section: str, guild_id: str, message_id: str, delete_discord: b
     if delete_discord and item:
         discord_request("DELETE", f"/channels/{item.get('channel_id')}/messages/{message_id}")
     delete_record(table, guild_id, message_id)
+    append_audit_log(
+        "deleted" if delete_discord else "deleted_record",
+        table,
+        guild_id,
+        message_id,
+        {"channel_id": item.get("channel_id") if item else "", "deleted_discord": delete_discord},
+        request_actor(),
+    )
     return {"ok": True}
 
 

@@ -7,6 +7,7 @@ const state = {
   emojis: {},
   mappings: [],
   savedRows: [],
+  auditRows: [],
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
@@ -135,12 +136,16 @@ async function checkLogin() {
 async function loadInitial() {
   fillColors();
   $("apiBaseInput").value = state.apiBase;
-  await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved()]);
+  await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
+  renderMessagePreview();
+  renderRolePreview();
 }
 
 async function loadHealth() {
   try {
-    $("healthBox").textContent = JSON.stringify(await api("/api/health"), null, 2);
+    const health = await api("/api/health");
+    $("healthBox").textContent = JSON.stringify(health, null, 2);
+    document.querySelector(".stat strong").textContent = String(health.storage || "json").toUpperCase();
   } catch (err) {
     $("healthBox").textContent = err.message;
   }
@@ -257,6 +262,7 @@ function renderMappings() {
   list.innerHTML = "";
   if (!state.mappings.length) {
     list.innerHTML = '<p class="muted">No mappings yet.</p>';
+    renderRolePreview();
     return;
   }
   state.mappings.forEach((item, index) => {
@@ -269,6 +275,71 @@ function renderMappings() {
     });
     list.appendChild(row);
   });
+  renderRolePreview();
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function renderDiscordText(value) {
+  const html = escapeHtml(value || "Nothing written yet.")
+    .replace(/^# (.+)$/gm, '<strong class="preview-heading">$1</strong>')
+    .replace(/\n/g, "<br />");
+  return html;
+}
+
+function renderMessagePreview() {
+  const box = $("msgPreview");
+  if (!box) return;
+  const title = $("msgTitle").value.trim();
+  const footer = $("msgFooter").value.trim();
+  const color = $("msgColor").value;
+  const content = $("msgContent").value.trim();
+  if ($("msgEmbed").checked) {
+    box.innerHTML = `
+      <div class="embed-preview embed-${color.toLowerCase()}">
+        ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
+        <div class="embed-body">${renderDiscordText(content)}</div>
+        ${footer ? `<div class="embed-footer">${escapeHtml(footer)}</div>` : ""}
+      </div>
+    `;
+    return;
+  }
+  box.innerHTML = `<div class="plain-preview">${renderDiscordText(content)}</div>`;
+}
+
+function renderRolePreview() {
+  const box = $("rrPreview");
+  if (!box) return;
+  const title = $("rrTitle").value.trim();
+  const description = $("rrDesc").value.trim();
+  const color = $("rrColor").value;
+  const showRoles = $("rrShowRoleNames").checked;
+  const roleLines = showRoles ? state.mappings.map((item) => `${item.emoji} @${item.role_name}`).join("\n") : "";
+  const body = [description, roleLines].filter(Boolean).join("\n\n");
+  const modeLabel = {
+    dropdown: "Dropdown menu",
+    button: "Button",
+    reaction: "Reaction",
+  }[$("rrMode").value] || "Dropdown menu";
+  const control = state.mappings.length
+    ? `<div class="component-preview">${escapeHtml(modeLabel)} · ${state.mappings.length} role${state.mappings.length > 1 ? "s" : ""}</div>`
+    : '<div class="component-preview empty">Add a role mapping to enable this panel.</div>';
+  if ($("rrEmbed").checked) {
+    box.innerHTML = `
+      <div class="embed-preview embed-${color.toLowerCase()}">
+        ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
+        <div class="embed-body">${renderDiscordText(body)}</div>
+      </div>
+      ${control}
+    `;
+    return;
+  }
+  box.innerHTML = `<div class="plain-preview">${renderDiscordText(title ? `# ${title}\n${body}` : body)}</div>${control}`;
 }
 
 function itemTitle(section, item) {
@@ -352,10 +423,53 @@ async function loadSaved() {
   renderRecent(rows);
 }
 
+function actionLabel(row) {
+  const section = row.section === "messages" ? "Message" : "Role panel";
+  const action = {
+    sent: "sent",
+    posted: "posted",
+    updated: "updated",
+    updated_record: "record updated",
+    deleted: "deleted from Discord",
+    deleted_record: "record deleted",
+  }[row.action] || row.action;
+  return `${section} ${action}`;
+}
+
+async function loadAuditLogs() {
+  try {
+    state.auditRows = await api("/api/audit-logs?limit=30");
+  } catch (_) {
+    state.auditRows = [];
+  }
+  const list = $("auditList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.auditRows.length) {
+    list.innerHTML = '<p class="muted">No activity yet.</p>';
+    return;
+  }
+  state.auditRows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    const title = row.payload?.title || row.payload?.panel_name || row.message_id || "Saved item";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(actionLabel(row))}</strong>
+        <div class="saved-meta">${escapeHtml(title)} · ${escapeHtml(when)} · ${escapeHtml(row.actor || "admin")}</div>
+      </div>
+      <span class="recent-type">${escapeHtml(row.guild_id || "guild")}</span>
+    `;
+    list.appendChild(item);
+  });
+}
+
 async function deleteSaved(section, guildId, messageId, deleteDiscord) {
   await api(`/api/saved/${section}/${guildId}/${messageId}?delete_discord=${deleteDiscord}`, { method: "DELETE" });
   toast(deleteDiscord ? "Discord message and saved record deleted." : "Saved record deleted.");
   await loadSaved();
+  await loadAuditLogs();
 }
 
 async function selectGuildAndChannel(prefix, guildId, channelId) {
@@ -481,9 +595,13 @@ function wireEvents() {
   $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
   $("msgGuild").addEventListener("change", () => loadChannels("msg"));
+  ["msgTitle", "msgFooter", "msgContent"].forEach((id) => $(id).addEventListener("input", renderMessagePreview));
+  ["msgColor", "msgEmbed"].forEach((id) => $(id).addEventListener("change", renderMessagePreview));
   $("rrGuild").addEventListener("change", async () => {
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);
   });
+  ["rrPanelName", "rrTitle", "rrDesc"].forEach((id) => $(id).addEventListener("input", renderRolePreview));
+  ["rrMode", "rrColor", "rrEmbed", "rrShowRoleNames"].forEach((id) => $(id).addEventListener("change", renderRolePreview));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {
@@ -499,7 +617,9 @@ function wireEvents() {
     });
     toast(`Message sent: ${result.message_id}`);
     clearMessageForm();
+    renderMessagePreview();
     await loadSaved();
+    await loadAuditLogs();
   }));
 
   $("updateMsgBtn").addEventListener("click", () => runAction("Update message", async () => {
@@ -519,12 +639,15 @@ function wireEvents() {
     toast(`Message updated: ${result.message_id}`);
     setMessageEditMode(null);
     clearMessageForm();
+    renderMessagePreview();
     await loadSaved();
+    await loadAuditLogs();
     setView("saved");
   }));
 
   $("cancelMsgEditBtn").addEventListener("click", () => {
     setMessageEditMode(null);
+    renderMessagePreview();
     toast("Message edit cancelled.");
   });
 
@@ -554,6 +677,7 @@ function wireEvents() {
     clearRoleForm();
     toast(`Role panel posted: ${result.message_id}`);
     await loadSaved();
+    await loadAuditLogs();
   }));
 
   $("updateRRBtn").addEventListener("click", () => runAction("Update role panel", async () => {
@@ -577,6 +701,7 @@ function wireEvents() {
     setRoleEditMode(null);
     clearRoleForm();
     await loadSaved();
+    await loadAuditLogs();
     setView("saved");
   }));
 
