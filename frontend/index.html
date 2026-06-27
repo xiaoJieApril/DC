@@ -7,8 +7,15 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- Primary dashboard navigation with bot branding. -->
     <aside class="sidebar">
-      <div class="brand">DC-Gra-vt-bot</div>
+      <div class="brand">
+        <img src="./assets/bot-logo.jpg" alt="" />
+        <div>
+          <strong>DC Bot</strong>
+          <span>Gra-VT Ops</span>
+        </div>
+      </div>
       <button class="nav active" data-view="overview">Overview</button>
       <button class="nav" data-view="messages">Send Message</button>
       <button class="nav" data-view="roles">Reaction Roles</button>
@@ -18,9 +25,12 @@
     </aside>
 
     <main>
+      <!-- Login screen keeps the bot logo visible before admin access. -->
       <section id="loginView" class="login">
         <form id="loginForm" class="panel login-panel">
-          <h1>DC-Gra-vt-bot</h1>
+          <img class="login-logo" src="./assets/bot-logo.jpg" alt="" />
+          <h1>DC Bot Dashboard</h1>
+          <p class="login-copy">Announcement and role operations for your Discord community.</p>
           <label>Username<input id="loginUser" autocomplete="username" value="admin" /></label>
           <label>Password<input id="loginPass" type="password" autocomplete="current-password" /></label>
           <button type="submit">Login</button>
@@ -65,6 +75,7 @@
               <button data-jump="saved" class="secondary">Manage Saved</button>
             </div>
           </div>
+          <!-- Static release notes shown after login. -->
           <div class="panel">
             <h2>Latest Update</h2>
             <div id="latestUpdateList" class="update-list"></div>
@@ -92,14 +103,15 @@
               <label>Color<select id="msgColor"></select></label>
               <label>Footer<input id="msgFooter" placeholder="Optional footer" /></label>
             </div>
+            <!-- Searchable mention dropdowns insert Discord mention tokens into the message editor. -->
             <div class="mention-tools">
-              <div class="mention-tool">
+              <div class="mention-tool dropdown">
                 <label>Mention Role<input id="mentionRoleSearch" placeholder="Search role name" /></label>
-                <div id="mentionRoleResults" class="mention-results"></div>
+                <div id="mentionRoleResults" class="mention-results dropdown-menu"></div>
               </div>
-              <div class="mention-tool">
+              <div class="mention-tool dropdown">
                 <label>Mention Member<input id="mentionMemberSearch" placeholder="Search member name" /></label>
-                <div id="mentionMemberResults" class="mention-results"></div>
+                <div id="mentionMemberResults" class="mention-results dropdown-menu"></div>
               </div>
             </div>
             <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>

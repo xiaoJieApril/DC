@@ -564,6 +564,7 @@ def roles(guild_id: str):
 
 @app.get("/api/discord/guilds/{guild_id}/members/search", dependencies=[Depends(require_admin)])
 def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=25)):
+    # Search guild members for the dashboard mention picker.
     query = urllib.parse.urlencode({"query": q.strip(), "limit": limit})
     data = discord_request("GET", f"/guilds/{guild_id}/members/search?{query}")
     rows = []
