@@ -7,8 +7,15 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- Primary dashboard navigation with bot branding. -->
     <aside class="sidebar">
-      <div class="brand">DC-Gra-vt-bot</div>
+      <div class="brand">
+        <img src="./assets/bot-logo.jpg" alt="" />
+        <div>
+          <strong>DC Bot</strong>
+          <span>Gra-VT Ops</span>
+        </div>
+      </div>
       <button class="nav active" data-view="overview">Overview</button>
       <button class="nav" data-view="messages">Send Message</button>
       <button class="nav" data-view="roles">Reaction Roles</button>
@@ -18,9 +25,12 @@
     </aside>
 
     <main>
+      <!-- Login screen keeps the bot logo visible before admin access. -->
       <section id="loginView" class="login">
         <form id="loginForm" class="panel login-panel">
-          <h1>DC-Gra-vt-bot</h1>
+          <img class="login-logo" src="./assets/bot-logo.jpg" alt="" />
+          <h1>DC Bot Dashboard</h1>
+          <p class="login-copy">Announcement and role operations for your Discord community.</p>
           <label>Username<input id="loginUser" autocomplete="username" value="admin" /></label>
           <label>Password<input id="loginPass" type="password" autocomplete="current-password" /></label>
           <button type="submit">Login</button>
@@ -65,6 +75,11 @@
               <button data-jump="saved" class="secondary">Manage Saved</button>
             </div>
           </div>
+          <!-- Static release notes shown after login. -->
+          <div class="panel">
+            <h2>Latest Update</h2>
+            <div id="latestUpdateList" class="update-list"></div>
+          </div>
           <div class="panel">
             <h2>Recent Activity</h2>
             <div id="recentList" class="recent-list"></div>
@@ -88,8 +103,22 @@
               <label>Color<select id="msgColor"></select></label>
               <label>Footer<input id="msgFooter" placeholder="Optional footer" /></label>
             </div>
+            <!-- Searchable mention dropdowns insert Discord mention tokens into the message editor. -->
+            <div class="mention-tools">
+              <div class="mention-tool dropdown">
+                <label>Mention Role<input id="mentionRoleSearch" placeholder="Search role name" /></label>
+                <div id="mentionRoleResults" class="mention-results dropdown-menu"></div>
+              </div>
+              <div class="mention-tool dropdown">
+                <label>Mention Member<input id="mentionMemberSearch" placeholder="Search member name" /></label>
+                <div id="mentionMemberResults" class="mention-results dropdown-menu"></div>
+              </div>
+            </div>
             <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>
-            <p class="muted">Mention: &lt;@user_id&gt; = member, &lt;@&amp;role_id&gt; = role, &lt;#channel_id&gt; = channel. Large heading: start a line with #.</p>
+            <div class="preview-box">
+              <div class="preview-label">Preview</div>
+              <div id="msgPreview" class="discord-preview"></div>
+            </div>
             <div class="actions">
               <button id="sendMsgBtn">Send Message</button>
               <button id="updateMsgBtn" class="secondary hidden">Update Saved Message</button>
@@ -114,7 +143,6 @@
             <label class="check"><input id="rrEmbed" type="checkbox" checked /> Send as embed</label>
             <label class="check"><input id="rrShowRoleNames" type="checkbox" checked /> Show role names in description</label>
             <label>Description<textarea id="rrDesc" rows="5">使用下拉式選單來更改名字顏色</textarea></label>
-            <p class="muted">Mention: &lt;@user_id&gt; = member, &lt;@&amp;role_id&gt; = role, &lt;#channel_id&gt; = channel. Large heading: start a line with #.</p>
 
             <div class="mapper">
               <label>Emoji<select id="rrEmoji"></select></label>
@@ -124,6 +152,10 @@
             </div>
             <p class="muted">Custom Emoji 支援 Unicode、Discord flag shortcode，例如 :flag_ar:，以及 server emoji 名字，例如 hololive 或 :hololive:。</p>
             <div id="mappingList" class="mapping-list"></div>
+            <div class="preview-box">
+              <div class="preview-label">Preview</div>
+              <div id="rrPreview" class="discord-preview"></div>
+            </div>
             <div class="actions">
               <button id="postRRBtn">Post Role Panel</button>
               <button id="updateRRBtn" class="secondary hidden">Update Saved Panel</button>
@@ -136,6 +168,10 @@
           <div class="panel">
             <h2>Saved Messages & Panels</h2>
             <div id="savedList" class="saved-list"></div>
+          </div>
+          <div class="panel">
+            <h2>Activity Log</h2>
+            <div id="auditList" class="audit-list"></div>
           </div>
         </section>
 

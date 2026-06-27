@@ -4,16 +4,26 @@ const state = {
   guilds: [],
   channels: {},
   roles: {},
+  members: {},
   emojis: {},
   mappings: [],
   savedRows: [],
+  auditRows: [],
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
+  mentionDropdown: "",
 };
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
 const commonEmojis = ["🎮", "✅", "⭐", "🔥", "💬", "🎨", "❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣"];
+// Release notes are frontend-owned for now; no storage or admin editor is needed.
+const latestUpdates = [
+  "Send Message can mention roles and members from the dashboard.",
+  "Role/member mention tokens are inserted automatically.",
+  "Message preview now shows mention chips.",
+];
+let memberSearchTimer = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -135,12 +145,30 @@ async function checkLogin() {
 async function loadInitial() {
   fillColors();
   $("apiBaseInput").value = state.apiBase;
-  await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved()]);
+  await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
+  renderLatestUpdates();
+  renderMessagePreview();
+  renderRolePreview();
+}
+
+// Render the Latest Update panel on the overview page.
+function renderLatestUpdates() {
+  const list = $("latestUpdateList");
+  if (!list) return;
+  list.innerHTML = "";
+  latestUpdates.forEach((text) => {
+    const row = document.createElement("div");
+    row.className = "update-item";
+    row.textContent = text;
+    list.appendChild(row);
+  });
 }
 
 async function loadHealth() {
   try {
-    $("healthBox").textContent = JSON.stringify(await api("/api/health"), null, 2);
+    const health = await api("/api/health");
+    $("healthBox").textContent = JSON.stringify(health, null, 2);
+    document.querySelector(".stat strong").textContent = String(health.storage || "json").toUpperCase();
   } catch (err) {
     $("healthBox").textContent = err.message;
   }
@@ -208,7 +236,7 @@ async function loadGuilds() {
   fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
-    await Promise.all([loadChannels("msg"), loadChannels("rr"), loadRoles(), loadEmojis()]);
+    await Promise.all([loadChannels("msg"), loadChannels("rr"), loadMessageMentionRoles(), loadRoles(), loadEmojis()]);
   }
 }
 
@@ -237,6 +265,18 @@ async function loadRoles() {
   );
 }
 
+async function loadMessageMentionRoles() {
+  // Reuse the roles endpoint so role mentions work without a separate API.
+  const guildId = $("msgGuild").value;
+  if (!guildId) return;
+  if (!state.roles[guildId]) {
+    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
+    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
+  }
+  renderRoleMentionResults();
+  renderMessagePreview();
+}
+
 async function loadEmojis() {
   const guildId = $("rrGuild").value;
   if (!guildId) return;
@@ -257,6 +297,7 @@ function renderMappings() {
   list.innerHTML = "";
   if (!state.mappings.length) {
     list.innerHTML = '<p class="muted">No mappings yet.</p>';
+    renderRolePreview();
     return;
   }
   state.mappings.forEach((item, index) => {
@@ -269,6 +310,218 @@ function renderMappings() {
     });
     list.appendChild(row);
   });
+  renderRolePreview();
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function shortId(value) {
+  const text = String(value || "");
+  return text.length > 8 ? `${text.slice(0, 4)}...${text.slice(-4)}` : text;
+}
+
+function currentMessageGuildId() {
+  return $("msgGuild")?.value || "";
+}
+
+function roleMentionLabel(roleId) {
+  const guildId = currentMessageGuildId();
+  const role = (state.roles[guildId] || []).find((item) => item.id === roleId);
+  return role ? role.name : `role ${shortId(roleId)}`;
+}
+
+function memberMentionLabel(userId) {
+  for (const rows of Object.values(state.members)) {
+    const member = rows.find((item) => item.id === userId);
+    if (member) return member.display_name || member.username || shortId(userId);
+  }
+  return `user ${shortId(userId)}`;
+}
+
+function renderDiscordText(value) {
+  // Convert saved Discord mention tokens into readable preview chips.
+  const html = escapeHtml(value || "Nothing written yet.")
+    .replace(/&lt;@&amp;(\d+)&gt;/g, (_, roleId) => `<span class="mention-chip">@${escapeHtml(roleMentionLabel(roleId))}</span>`)
+    .replace(/&lt;@(\d+)&gt;/g, (_, userId) => `<span class="mention-chip">@${escapeHtml(memberMentionLabel(userId))}</span>`)
+    .replace(/^# (.+)$/gm, '<strong class="preview-heading">$1</strong>')
+    .replace(/\n/g, "<br />");
+  return html;
+}
+
+function insertMentionToken(token) {
+  // Insert the mention at the current cursor position and keep editing flow active.
+  const textarea = $("msgContent");
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  const prefix = before && !/\s$/.test(before) ? " " : "";
+  const suffix = after && !/^\s/.test(after) ? " " : "";
+  const insert = `${prefix}${token}${suffix}`;
+  textarea.value = `${before}${insert}${after}`;
+  const cursor = before.length + insert.length;
+  textarea.focus();
+  textarea.setSelectionRange(cursor, cursor);
+  renderMessagePreview();
+}
+
+function clearMentionResults() {
+  $("mentionRoleSearch").value = "";
+  $("mentionMemberSearch").value = "";
+  state.members[currentMessageGuildId()] = [];
+  closeMentionDropdowns();
+}
+
+function openMentionDropdown(kind) {
+  // Only one mention dropdown should be open at a time.
+  state.mentionDropdown = kind;
+  $("mentionRoleResults").classList.toggle("open", kind === "role");
+  $("mentionMemberResults").classList.toggle("open", kind === "member");
+}
+
+function closeMentionDropdowns() {
+  state.mentionDropdown = "";
+  $("mentionRoleResults").classList.remove("open");
+  $("mentionMemberResults").classList.remove("open");
+}
+
+function renderRoleMentionResults() {
+  // Role search is local because the dashboard already loads guild roles.
+  const list = $("mentionRoleResults");
+  if (!list) return;
+  const query = $("mentionRoleSearch").value.trim().toLowerCase();
+  const guildId = currentMessageGuildId();
+  const roles = state.roles[guildId] || [];
+  const matches = roles
+    .filter((role) => !query || String(role.name || "").toLowerCase().includes(query))
+    .slice(0, 10);
+  list.innerHTML = "";
+  if (!matches.length) {
+    list.innerHTML = '<p class="muted compact">No matching roles.</p>';
+    return;
+  }
+  matches.forEach((role) => {
+    const button = document.createElement("button");
+    button.className = "mention-result";
+    button.type = "button";
+    button.innerHTML = `<span>@${escapeHtml(role.name)}</span><small>${escapeHtml(shortId(role.id))}</small>`;
+    button.addEventListener("click", () => {
+      $("mentionRoleSearch").value = "";
+      closeMentionDropdowns();
+      insertMentionToken(`<@&${role.id}>`);
+    });
+    list.appendChild(button);
+  });
+}
+
+function renderMemberMentionResults(rows = null, message = "") {
+  // Member search results come from Discord and can be unavailable on some servers.
+  const list = $("mentionMemberResults");
+  if (!list) return;
+  list.innerHTML = "";
+  if (message) {
+    list.innerHTML = `<p class="muted compact">${escapeHtml(message)}</p>`;
+    return;
+  }
+  const members = rows || state.members[currentMessageGuildId()] || [];
+  if (!members.length) {
+    list.innerHTML = '<p class="muted compact">Search members by name.</p>';
+    return;
+  }
+  members.forEach((member) => {
+    const button = document.createElement("button");
+    button.className = "mention-result";
+    button.type = "button";
+    const display = member.display_name || member.username || member.id;
+    button.innerHTML = `<span>@${escapeHtml(display)}</span><small>${escapeHtml(member.username || shortId(member.id))} · ${escapeHtml(shortId(member.id))}</small>`;
+    button.addEventListener("click", () => {
+      $("mentionMemberSearch").value = "";
+      closeMentionDropdowns();
+      insertMentionToken(`<@${member.id}>`);
+    });
+    list.appendChild(button);
+  });
+}
+
+async function searchMembers() {
+  // Discord member search can fail when the bot lacks access; keep the UI graceful.
+  const guildId = currentMessageGuildId();
+  const query = $("mentionMemberSearch").value.trim();
+  if (!guildId || !query) {
+    state.members[guildId] = [];
+    renderMemberMentionResults([]);
+    openMentionDropdown("member");
+    renderMessagePreview();
+    return;
+  }
+  try {
+    const rows = await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`);
+    state.members[guildId] = rows;
+    renderMemberMentionResults(rows);
+    openMentionDropdown("member");
+    renderMessagePreview();
+  } catch (err) {
+    state.members[guildId] = [];
+    renderMemberMentionResults([], "Member search unavailable");
+    openMentionDropdown("member");
+    toast(`Member search unavailable: ${err.message}`);
+  }
+}
+
+function renderMessagePreview() {
+  // Preview mirrors the message payload while preserving the original textarea tokens.
+  const box = $("msgPreview");
+  if (!box) return;
+  const title = $("msgTitle").value.trim();
+  const footer = $("msgFooter").value.trim();
+  const color = $("msgColor").value;
+  const content = $("msgContent").value.trim();
+  if ($("msgEmbed").checked) {
+    box.innerHTML = `
+      <div class="embed-preview embed-${color.toLowerCase()}">
+        ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
+        <div class="embed-body">${renderDiscordText(content)}</div>
+        ${footer ? `<div class="embed-footer">${escapeHtml(footer)}</div>` : ""}
+      </div>
+    `;
+    return;
+  }
+  box.innerHTML = `<div class="plain-preview">${renderDiscordText(content)}</div>`;
+}
+
+function renderRolePreview() {
+  const box = $("rrPreview");
+  if (!box) return;
+  const title = $("rrTitle").value.trim();
+  const description = $("rrDesc").value.trim();
+  const color = $("rrColor").value;
+  const showRoles = $("rrShowRoleNames").checked;
+  const roleLines = showRoles ? state.mappings.map((item) => `${item.emoji} @${item.role_name}`).join("\n") : "";
+  const body = [description, roleLines].filter(Boolean).join("\n\n");
+  const modeLabel = {
+    dropdown: "Dropdown menu",
+    button: "Button",
+    reaction: "Reaction",
+  }[$("rrMode").value] || "Dropdown menu";
+  const control = state.mappings.length
+    ? `<div class="component-preview">${escapeHtml(modeLabel)} · ${state.mappings.length} role${state.mappings.length > 1 ? "s" : ""}</div>`
+    : '<div class="component-preview empty">Add a role mapping to enable this panel.</div>';
+  if ($("rrEmbed").checked) {
+    box.innerHTML = `
+      <div class="embed-preview embed-${color.toLowerCase()}">
+        ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
+        <div class="embed-body">${renderDiscordText(body)}</div>
+      </div>
+      ${control}
+    `;
+    return;
+  }
+  box.innerHTML = `<div class="plain-preview">${renderDiscordText(title ? `# ${title}\n${body}` : body)}</div>${control}`;
 }
 
 function itemTitle(section, item) {
@@ -352,10 +605,53 @@ async function loadSaved() {
   renderRecent(rows);
 }
 
+function actionLabel(row) {
+  const section = row.section === "messages" ? "Message" : "Role panel";
+  const action = {
+    sent: "sent",
+    posted: "posted",
+    updated: "updated",
+    updated_record: "record updated",
+    deleted: "deleted from Discord",
+    deleted_record: "record deleted",
+  }[row.action] || row.action;
+  return `${section} ${action}`;
+}
+
+async function loadAuditLogs() {
+  try {
+    state.auditRows = await api("/api/audit-logs?limit=30");
+  } catch (_) {
+    state.auditRows = [];
+  }
+  const list = $("auditList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.auditRows.length) {
+    list.innerHTML = '<p class="muted">No activity yet.</p>';
+    return;
+  }
+  state.auditRows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    const title = row.payload?.title || row.payload?.panel_name || row.message_id || "Saved item";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(actionLabel(row))}</strong>
+        <div class="saved-meta">${escapeHtml(title)} · ${escapeHtml(when)} · ${escapeHtml(row.actor || "admin")}</div>
+      </div>
+      <span class="recent-type">${escapeHtml(row.guild_id || "guild")}</span>
+    `;
+    list.appendChild(item);
+  });
+}
+
 async function deleteSaved(section, guildId, messageId, deleteDiscord) {
   await api(`/api/saved/${section}/${guildId}/${messageId}?delete_discord=${deleteDiscord}`, { method: "DELETE" });
   toast(deleteDiscord ? "Discord message and saved record deleted." : "Saved record deleted.");
   await loadSaved();
+  await loadAuditLogs();
 }
 
 async function selectGuildAndChannel(prefix, guildId, channelId) {
@@ -384,11 +680,13 @@ function descriptionNoteOnly(value) {
 async function editSaved(section, guildId, messageId, item) {
   if (section === "messages") {
     await selectGuildAndChannel("msg", guildId, item.channel_id);
+    await loadMessageMentionRoles();
     $("msgEmbed").checked = item.type === "embed";
     $("msgTitle").value = item.title || "";
     $("msgColor").value = item.color || "Blurple";
     $("msgFooter").value = item.footer || "";
     $("msgContent").value = item.content || "";
+    renderMessagePreview();
     setMessageEditMode({ section, guildId, messageId, item });
     setView("messages");
     toast(`Editing message ${messageId}`);
@@ -480,10 +778,40 @@ function wireEvents() {
   $("refreshBtn").addEventListener("click", loadInitial);
   $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
-  $("msgGuild").addEventListener("change", () => loadChannels("msg"));
+  $("msgGuild").addEventListener("change", async () => {
+    clearMentionResults();
+    await Promise.all([loadChannels("msg"), loadMessageMentionRoles()]);
+    renderMessagePreview();
+  });
+  ["msgTitle", "msgFooter", "msgContent"].forEach((id) => $(id).addEventListener("input", renderMessagePreview));
+  ["msgColor", "msgEmbed"].forEach((id) => $(id).addEventListener("change", renderMessagePreview));
+  $("mentionRoleSearch").addEventListener("focus", () => {
+    renderRoleMentionResults();
+    openMentionDropdown("role");
+  });
+  $("mentionRoleSearch").addEventListener("input", () => {
+    renderRoleMentionResults();
+    openMentionDropdown("role");
+  });
+  $("mentionMemberSearch").addEventListener("focus", () => {
+    renderMemberMentionResults();
+    openMentionDropdown("member");
+  });
+  $("mentionMemberSearch").addEventListener("input", () => {
+    clearTimeout(memberSearchTimer);
+    openMentionDropdown("member");
+    memberSearchTimer = setTimeout(searchMembers, 250);
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".mention-tool")) {
+      closeMentionDropdowns();
+    }
+  });
   $("rrGuild").addEventListener("change", async () => {
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);
   });
+  ["rrPanelName", "rrTitle", "rrDesc"].forEach((id) => $(id).addEventListener("input", renderRolePreview));
+  ["rrMode", "rrColor", "rrEmbed", "rrShowRoleNames"].forEach((id) => $(id).addEventListener("change", renderRolePreview));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {
@@ -499,7 +827,9 @@ function wireEvents() {
     });
     toast(`Message sent: ${result.message_id}`);
     clearMessageForm();
+    renderMessagePreview();
     await loadSaved();
+    await loadAuditLogs();
   }));
 
   $("updateMsgBtn").addEventListener("click", () => runAction("Update message", async () => {
@@ -519,12 +849,15 @@ function wireEvents() {
     toast(`Message updated: ${result.message_id}`);
     setMessageEditMode(null);
     clearMessageForm();
+    renderMessagePreview();
     await loadSaved();
+    await loadAuditLogs();
     setView("saved");
   }));
 
   $("cancelMsgEditBtn").addEventListener("click", () => {
     setMessageEditMode(null);
+    renderMessagePreview();
     toast("Message edit cancelled.");
   });
 
@@ -554,6 +887,7 @@ function wireEvents() {
     clearRoleForm();
     toast(`Role panel posted: ${result.message_id}`);
     await loadSaved();
+    await loadAuditLogs();
   }));
 
   $("updateRRBtn").addEventListener("click", () => runAction("Update role panel", async () => {
@@ -577,6 +911,7 @@ function wireEvents() {
     setRoleEditMode(null);
     clearRoleForm();
     await loadSaved();
+    await loadAuditLogs();
     setView("saved");
   }));
 

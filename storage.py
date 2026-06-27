@@ -15,6 +15,7 @@ LOCK_FILE = BASE_DIR / "config.json.lock"
 DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
+    "audit_logs": [],
 }
 
 
@@ -35,6 +36,7 @@ def normalize_config(data):
     return {
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
+        "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
     }
 
 
@@ -117,3 +119,22 @@ def delete_record(section, guild_id, message_id):
         config = _load_config_unlocked()
         config.setdefault(section, {}).setdefault(str(guild_id), {}).pop(str(message_id), None)
         _save_config_unlocked(config)
+
+
+def append_audit_log(action, section, guild_id="", message_id="", payload=None, actor="dashboard"):
+    entry = {
+        "ts": int(time.time()),
+        "actor": actor or "dashboard",
+        "action": action,
+        "section": section,
+        "guild_id": str(guild_id or ""),
+        "message_id": str(message_id or ""),
+        "payload": payload or {},
+    }
+    with config_lock():
+        config = _load_config_unlocked()
+        logs = config.setdefault("audit_logs", [])
+        logs.insert(0, entry)
+        del logs[100:]
+        _save_config_unlocked(config)
+    return entry
