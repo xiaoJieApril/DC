@@ -102,7 +102,7 @@ class ReactionRolePayload(BaseModel):
     description: str = DEFAULT_RR_DESCRIPTION
     mode: str = "dropdown"
     use_embed: bool = True
-    include_role_mentions: bool = True
+    include_role_mentions: bool = False
     color: str = "Blurple"
     mappings: list[MappingPayload]
 
@@ -674,9 +674,9 @@ def create_reaction_role(payload: ReactionRolePayload):
     if payload.mode == "button":
         mappings = mappings[:1]
 
-    mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in mappings) if payload.include_role_mentions else ""
+    # Mapping data controls the role component only; visible panel text is written manually.
     footer_text = payload.description.strip()
-    description = ((footer_text + "\n\n") if footer_text and mapping_lines else footer_text) + mapping_lines
+    description = footer_text
     body = {}
     if payload.use_embed:
         embed_payload = {
@@ -725,7 +725,7 @@ def create_reaction_role(payload: ReactionRolePayload):
         "title": payload.title.strip(),
         "panel_name": payload.panel_name.strip() or first_non_empty_line(payload.description) or "Untitled role panel",
         "description": description,
-        "include_role_mentions": payload.include_role_mentions,
+        "include_role_mentions": False,
         "mode": mode,
         "kind": "reaction_role",
         "mappings": {item["emoji"]: item["role_id"] for item in mappings},
@@ -803,9 +803,9 @@ def edit_reaction_role(guild_id: str, message_id: str, payload: ReactionRolePayl
     if payload.mode == "button":
         mappings = mappings[:1]
 
-    mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in mappings) if payload.include_role_mentions else ""
+    # Mapping data controls the role component only; visible panel text is written manually.
     footer_text = payload.description.strip()
-    description = ((footer_text + "\n\n") if footer_text and mapping_lines else footer_text) + mapping_lines
+    description = footer_text
     mode = payload.mode if payload.mode in ("reaction", "button") else "dropdown"
     channel_id = existing.get("channel_id", payload.channel_id)
 
@@ -846,7 +846,7 @@ def edit_reaction_role(guild_id: str, message_id: str, payload: ReactionRolePayl
         "title": payload.title.strip(),
         "panel_name": payload.panel_name.strip() or first_non_empty_line(payload.description) or "Untitled role panel",
         "description": description,
-        "include_role_mentions": payload.include_role_mentions,
+        "include_role_mentions": False,
         "mode": mode,
         "kind": "reaction_role",
         "mappings": {item["emoji"]: item["role_id"] for item in mappings},

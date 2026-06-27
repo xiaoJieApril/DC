@@ -329,8 +329,29 @@ function currentMessageGuildId() {
   return $("msgGuild")?.value || "";
 }
 
-function roleMentionLabel(roleId) {
-  const guildId = currentMessageGuildId();
+function mentionConfig(scope = "msg") {
+  return scope === "rr"
+    ? {
+        guildId: $("rrGuild")?.value || "",
+        roleInput: "rrMentionRoleSearch",
+        roleResults: "rrMentionRoleResults",
+        memberInput: "rrMentionMemberSearch",
+        memberResults: "rrMentionMemberResults",
+        textarea: "rrDesc",
+        render: renderRolePreview,
+      }
+    : {
+        guildId: currentMessageGuildId(),
+        roleInput: "mentionRoleSearch",
+        roleResults: "mentionRoleResults",
+        memberInput: "mentionMemberSearch",
+        memberResults: "mentionMemberResults",
+        textarea: "msgContent",
+        render: renderMessagePreview,
+      };
+}
+
+function roleMentionLabel(roleId, guildId = currentMessageGuildId()) {
   const role = (state.roles[guildId] || []).find((item) => item.id === roleId);
   return role ? role.name : `role ${shortId(roleId)}`;
 }
@@ -343,19 +364,20 @@ function memberMentionLabel(userId) {
   return `user ${shortId(userId)}`;
 }
 
-function renderDiscordText(value) {
+function renderDiscordText(value, guildId = currentMessageGuildId()) {
   // Convert saved Discord mention tokens into readable preview chips.
   const html = escapeHtml(value || "Nothing written yet.")
-    .replace(/&lt;@&amp;(\d+)&gt;/g, (_, roleId) => `<span class="mention-chip">@${escapeHtml(roleMentionLabel(roleId))}</span>`)
+    .replace(/&lt;@&amp;(\d+)&gt;/g, (_, roleId) => `<span class="mention-chip">@${escapeHtml(roleMentionLabel(roleId, guildId))}</span>`)
     .replace(/&lt;@(\d+)&gt;/g, (_, userId) => `<span class="mention-chip">@${escapeHtml(memberMentionLabel(userId))}</span>`)
     .replace(/^# (.+)$/gm, '<strong class="preview-heading">$1</strong>')
     .replace(/\n/g, "<br />");
   return html;
 }
 
-function insertMentionToken(token) {
+function insertMentionToken(token, scope = "msg") {
   // Insert the mention at the current cursor position and keep editing flow active.
-  const textarea = $("msgContent");
+  const config = mentionConfig(scope);
+  const textarea = $(config.textarea);
   const start = textarea.selectionStart ?? textarea.value.length;
   const end = textarea.selectionEnd ?? textarea.value.length;
   const before = textarea.value.slice(0, start);
@@ -367,35 +389,41 @@ function insertMentionToken(token) {
   const cursor = before.length + insert.length;
   textarea.focus();
   textarea.setSelectionRange(cursor, cursor);
-  renderMessagePreview();
+  config.render();
 }
 
-function clearMentionResults() {
-  $("mentionRoleSearch").value = "";
-  $("mentionMemberSearch").value = "";
-  state.members[currentMessageGuildId()] = [];
+function clearMentionResults(scope = "msg") {
+  const config = mentionConfig(scope);
+  $(config.roleInput).value = "";
+  $(config.memberInput).value = "";
+  state.members[config.guildId] = [];
   closeMentionDropdowns();
 }
 
 function openMentionDropdown(kind) {
   // Only one mention dropdown should be open at a time.
   state.mentionDropdown = kind;
-  $("mentionRoleResults").classList.toggle("open", kind === "role");
-  $("mentionMemberResults").classList.toggle("open", kind === "member");
+  $("mentionRoleResults").classList.toggle("open", kind === "msg-role");
+  $("mentionMemberResults").classList.toggle("open", kind === "msg-member");
+  $("rrMentionRoleResults").classList.toggle("open", kind === "rr-role");
+  $("rrMentionMemberResults").classList.toggle("open", kind === "rr-member");
 }
 
 function closeMentionDropdowns() {
   state.mentionDropdown = "";
   $("mentionRoleResults").classList.remove("open");
   $("mentionMemberResults").classList.remove("open");
+  $("rrMentionRoleResults").classList.remove("open");
+  $("rrMentionMemberResults").classList.remove("open");
 }
 
-function renderRoleMentionResults() {
+function renderRoleMentionResults(scope = "msg") {
   // Role search is local because the dashboard already loads guild roles.
-  const list = $("mentionRoleResults");
+  const config = mentionConfig(scope);
+  const list = $(config.roleResults);
   if (!list) return;
-  const query = $("mentionRoleSearch").value.trim().toLowerCase();
-  const guildId = currentMessageGuildId();
+  const query = $(config.roleInput).value.trim().toLowerCase();
+  const guildId = config.guildId;
   const roles = state.roles[guildId] || [];
   const matches = roles
     .filter((role) => !query || String(role.name || "").toLowerCase().includes(query))
@@ -411,24 +439,25 @@ function renderRoleMentionResults() {
     button.type = "button";
     button.innerHTML = `<span>@${escapeHtml(role.name)}</span><small>${escapeHtml(shortId(role.id))}</small>`;
     button.addEventListener("click", () => {
-      $("mentionRoleSearch").value = "";
+      $(config.roleInput).value = "";
       closeMentionDropdowns();
-      insertMentionToken(`<@&${role.id}>`);
+      insertMentionToken(`<@&${role.id}>`, scope);
     });
     list.appendChild(button);
   });
 }
 
-function renderMemberMentionResults(rows = null, message = "") {
+function renderMemberMentionResults(scope = "msg", rows = null, message = "") {
   // Member search results come from Discord and can be unavailable on some servers.
-  const list = $("mentionMemberResults");
+  const config = mentionConfig(scope);
+  const list = $(config.memberResults);
   if (!list) return;
   list.innerHTML = "";
   if (message) {
     list.innerHTML = `<p class="muted compact">${escapeHtml(message)}</p>`;
     return;
   }
-  const members = rows || state.members[currentMessageGuildId()] || [];
+  const members = rows || state.members[config.guildId] || [];
   if (!members.length) {
     list.innerHTML = '<p class="muted compact">Search members by name.</p>';
     return;
@@ -440,35 +469,36 @@ function renderMemberMentionResults(rows = null, message = "") {
     const display = member.display_name || member.username || member.id;
     button.innerHTML = `<span>@${escapeHtml(display)}</span><small>${escapeHtml(member.username || shortId(member.id))} · ${escapeHtml(shortId(member.id))}</small>`;
     button.addEventListener("click", () => {
-      $("mentionMemberSearch").value = "";
+      $(config.memberInput).value = "";
       closeMentionDropdowns();
-      insertMentionToken(`<@${member.id}>`);
+      insertMentionToken(`<@${member.id}>`, scope);
     });
     list.appendChild(button);
   });
 }
 
-async function searchMembers() {
+async function searchMembers(scope = "msg") {
   // Discord member search can fail when the bot lacks access; keep the UI graceful.
-  const guildId = currentMessageGuildId();
-  const query = $("mentionMemberSearch").value.trim();
+  const config = mentionConfig(scope);
+  const guildId = config.guildId;
+  const query = $(config.memberInput).value.trim();
   if (!guildId || !query) {
     state.members[guildId] = [];
-    renderMemberMentionResults([]);
-    openMentionDropdown("member");
-    renderMessagePreview();
+    renderMemberMentionResults(scope, []);
+    openMentionDropdown(`${scope}-member`);
+    config.render();
     return;
   }
   try {
     const rows = await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`);
     state.members[guildId] = rows;
-    renderMemberMentionResults(rows);
-    openMentionDropdown("member");
-    renderMessagePreview();
+    renderMemberMentionResults(scope, rows);
+    openMentionDropdown(`${scope}-member`);
+    config.render();
   } catch (err) {
     state.members[guildId] = [];
-    renderMemberMentionResults([], "Member search unavailable");
-    openMentionDropdown("member");
+    renderMemberMentionResults(scope, [], "Member search unavailable");
+    openMentionDropdown(`${scope}-member`);
     toast(`Member search unavailable: ${err.message}`);
   }
 }
@@ -500,9 +530,8 @@ function renderRolePreview() {
   const title = $("rrTitle").value.trim();
   const description = $("rrDesc").value.trim();
   const color = $("rrColor").value;
-  const showRoles = $("rrShowRoleNames").checked;
-  const roleLines = showRoles ? state.mappings.map((item) => `${item.emoji} @${item.role_name}`).join("\n") : "";
-  const body = [description, roleLines].filter(Boolean).join("\n\n");
+  const guildId = $("rrGuild")?.value || "";
+  const body = description;
   const modeLabel = {
     dropdown: "Dropdown menu",
     button: "Button",
@@ -515,13 +544,13 @@ function renderRolePreview() {
     box.innerHTML = `
       <div class="embed-preview embed-${color.toLowerCase()}">
         ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
-        <div class="embed-body">${renderDiscordText(body)}</div>
+        <div class="embed-body">${renderDiscordText(body, guildId)}</div>
       </div>
       ${control}
     `;
     return;
   }
-  box.innerHTML = `<div class="plain-preview">${renderDiscordText(title ? `# ${title}\n${body}` : body)}</div>${control}`;
+  box.innerHTML = `<div class="plain-preview">${renderDiscordText(title ? `# ${title}\n${body}` : body, guildId)}</div>${control}`;
 }
 
 function itemTitle(section, item) {
@@ -698,7 +727,6 @@ async function editSaved(section, guildId, messageId, item) {
   $("rrPanelName").value = item.panel_name || "";
   $("rrTitle").value = item.title || "";
   $("rrMode").value = item.mode === "reaction" ? "reaction" : item.mode === "button" ? "button" : "dropdown";
-  $("rrShowRoleNames").checked = item.include_role_mentions !== false;
   $("rrDesc").value = descriptionNoteOnly(item.description) || "使用下拉式選單來更改名字顏色";
   state.mappings = Object.entries(item.mappings || {}).map(([emoji, roleId]) => {
     const role = (state.roles[guildId] || []).find((candidate) => candidate.id === roleId);
@@ -787,19 +815,19 @@ function wireEvents() {
   ["msgColor", "msgEmbed"].forEach((id) => $(id).addEventListener("change", renderMessagePreview));
   $("mentionRoleSearch").addEventListener("focus", () => {
     renderRoleMentionResults();
-    openMentionDropdown("role");
+    openMentionDropdown("msg-role");
   });
   $("mentionRoleSearch").addEventListener("input", () => {
     renderRoleMentionResults();
-    openMentionDropdown("role");
+    openMentionDropdown("msg-role");
   });
   $("mentionMemberSearch").addEventListener("focus", () => {
-    renderMemberMentionResults();
-    openMentionDropdown("member");
+    renderMemberMentionResults("msg");
+    openMentionDropdown("msg-member");
   });
   $("mentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
-    openMentionDropdown("member");
+    openMentionDropdown("msg-member");
     memberSearchTimer = setTimeout(searchMembers, 250);
   });
   document.addEventListener("click", (event) => {
@@ -808,10 +836,29 @@ function wireEvents() {
     }
   });
   $("rrGuild").addEventListener("change", async () => {
+    clearMentionResults("rr");
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);
+    renderRolePreview();
   });
   ["rrPanelName", "rrTitle", "rrDesc"].forEach((id) => $(id).addEventListener("input", renderRolePreview));
-  ["rrMode", "rrColor", "rrEmbed", "rrShowRoleNames"].forEach((id) => $(id).addEventListener("change", renderRolePreview));
+  ["rrMode", "rrColor", "rrEmbed"].forEach((id) => $(id).addEventListener("change", renderRolePreview));
+  $("rrMentionRoleSearch").addEventListener("focus", () => {
+    renderRoleMentionResults("rr");
+    openMentionDropdown("rr-role");
+  });
+  $("rrMentionRoleSearch").addEventListener("input", () => {
+    renderRoleMentionResults("rr");
+    openMentionDropdown("rr-role");
+  });
+  $("rrMentionMemberSearch").addEventListener("focus", () => {
+    renderMemberMentionResults("rr");
+    openMentionDropdown("rr-member");
+  });
+  $("rrMentionMemberSearch").addEventListener("input", () => {
+    clearTimeout(memberSearchTimer);
+    openMentionDropdown("rr-member");
+    memberSearchTimer = setTimeout(() => searchMembers("rr"), 250);
+  });
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {
@@ -879,7 +926,7 @@ function wireEvents() {
         description: $("rrDesc").value,
         mode: $("rrMode").value,
         use_embed: $("rrEmbed").checked,
-        include_role_mentions: $("rrShowRoleNames").checked,
+        include_role_mentions: false,
         color: $("rrColor").value,
         mappings: state.mappings,
       }),
@@ -902,7 +949,7 @@ function wireEvents() {
         description: $("rrDesc").value,
         mode: $("rrMode").value,
         use_embed: $("rrEmbed").checked,
-        include_role_mentions: $("rrShowRoleNames").checked,
+        include_role_mentions: false,
         color: $("rrColor").value,
         mappings: state.mappings,
       }),
