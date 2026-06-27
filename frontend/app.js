@@ -4,6 +4,7 @@ const state = {
   guilds: [],
   channels: {},
   roles: {},
+  members: {},
   emojis: {},
   mappings: [],
   savedRows: [],
@@ -15,6 +16,12 @@ const state = {
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
 const commonEmojis = ["🎮", "✅", "⭐", "🔥", "💬", "🎨", "❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣"];
+const latestUpdates = [
+  "Send Message can mention roles and members from the dashboard.",
+  "Role/member mention tokens are inserted automatically.",
+  "Message preview now shows mention chips.",
+];
+let memberSearchTimer = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -137,8 +144,21 @@ async function loadInitial() {
   fillColors();
   $("apiBaseInput").value = state.apiBase;
   await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
+  renderLatestUpdates();
   renderMessagePreview();
   renderRolePreview();
+}
+
+function renderLatestUpdates() {
+  const list = $("latestUpdateList");
+  if (!list) return;
+  list.innerHTML = "";
+  latestUpdates.forEach((text) => {
+    const row = document.createElement("div");
+    row.className = "update-item";
+    row.textContent = text;
+    list.appendChild(row);
+  });
 }
 
 async function loadHealth() {
@@ -213,7 +233,7 @@ async function loadGuilds() {
   fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
-    await Promise.all([loadChannels("msg"), loadChannels("rr"), loadRoles(), loadEmojis()]);
+    await Promise.all([loadChannels("msg"), loadChannels("rr"), loadMessageMentionRoles(), loadRoles(), loadEmojis()]);
   }
 }
 
@@ -240,6 +260,17 @@ async function loadRoles() {
     (r) => `${r.name} (${r.id})`,
     (r) => r.id,
   );
+}
+
+async function loadMessageMentionRoles() {
+  const guildId = $("msgGuild").value;
+  if (!guildId) return;
+  if (!state.roles[guildId]) {
+    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
+    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
+  }
+  renderRoleMentionResults();
+  renderMessagePreview();
 }
 
 async function loadEmojis() {
@@ -285,11 +316,132 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+function shortId(value) {
+  const text = String(value || "");
+  return text.length > 8 ? `${text.slice(0, 4)}...${text.slice(-4)}` : text;
+}
+
+function currentMessageGuildId() {
+  return $("msgGuild")?.value || "";
+}
+
+function roleMentionLabel(roleId) {
+  const guildId = currentMessageGuildId();
+  const role = (state.roles[guildId] || []).find((item) => item.id === roleId);
+  return role ? role.name : `role ${shortId(roleId)}`;
+}
+
+function memberMentionLabel(userId) {
+  for (const rows of Object.values(state.members)) {
+    const member = rows.find((item) => item.id === userId);
+    if (member) return member.display_name || member.username || shortId(userId);
+  }
+  return `user ${shortId(userId)}`;
+}
+
 function renderDiscordText(value) {
   const html = escapeHtml(value || "Nothing written yet.")
+    .replace(/&lt;@&amp;(\d+)&gt;/g, (_, roleId) => `<span class="mention-chip">@${escapeHtml(roleMentionLabel(roleId))}</span>`)
+    .replace(/&lt;@(\d+)&gt;/g, (_, userId) => `<span class="mention-chip">@${escapeHtml(memberMentionLabel(userId))}</span>`)
     .replace(/^# (.+)$/gm, '<strong class="preview-heading">$1</strong>')
     .replace(/\n/g, "<br />");
   return html;
+}
+
+function insertMentionToken(token) {
+  const textarea = $("msgContent");
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  const prefix = before && !/\s$/.test(before) ? " " : "";
+  const suffix = after && !/^\s/.test(after) ? " " : "";
+  const insert = `${prefix}${token}${suffix}`;
+  textarea.value = `${before}${insert}${after}`;
+  const cursor = before.length + insert.length;
+  textarea.focus();
+  textarea.setSelectionRange(cursor, cursor);
+  renderMessagePreview();
+}
+
+function clearMentionResults() {
+  $("mentionRoleSearch").value = "";
+  $("mentionMemberSearch").value = "";
+  $("mentionRoleResults").innerHTML = "";
+  $("mentionMemberResults").innerHTML = "";
+}
+
+function renderRoleMentionResults() {
+  const list = $("mentionRoleResults");
+  if (!list) return;
+  const query = $("mentionRoleSearch").value.trim().toLowerCase();
+  const guildId = currentMessageGuildId();
+  const roles = state.roles[guildId] || [];
+  if (!query) {
+    list.innerHTML = '<p class="muted compact">Search roles by name.</p>';
+    return;
+  }
+  const matches = roles
+    .filter((role) => String(role.name || "").toLowerCase().includes(query))
+    .slice(0, 10);
+  list.innerHTML = "";
+  if (!matches.length) {
+    list.innerHTML = '<p class="muted compact">No matching roles.</p>';
+    return;
+  }
+  matches.forEach((role) => {
+    const button = document.createElement("button");
+    button.className = "mention-result";
+    button.type = "button";
+    button.innerHTML = `<span>@${escapeHtml(role.name)}</span><small>${escapeHtml(shortId(role.id))}</small>`;
+    button.addEventListener("click", () => insertMentionToken(`<@&${role.id}>`));
+    list.appendChild(button);
+  });
+}
+
+function renderMemberMentionResults(rows = null, message = "") {
+  const list = $("mentionMemberResults");
+  if (!list) return;
+  list.innerHTML = "";
+  if (message) {
+    list.innerHTML = `<p class="muted compact">${escapeHtml(message)}</p>`;
+    return;
+  }
+  const members = rows || state.members[currentMessageGuildId()] || [];
+  if (!members.length) {
+    list.innerHTML = '<p class="muted compact">Search members by name.</p>';
+    return;
+  }
+  members.forEach((member) => {
+    const button = document.createElement("button");
+    button.className = "mention-result";
+    button.type = "button";
+    const display = member.display_name || member.username || member.id;
+    button.innerHTML = `<span>@${escapeHtml(display)}</span><small>${escapeHtml(member.username || shortId(member.id))} · ${escapeHtml(shortId(member.id))}</small>`;
+    button.addEventListener("click", () => insertMentionToken(`<@${member.id}>`));
+    list.appendChild(button);
+  });
+}
+
+async function searchMembers() {
+  const guildId = currentMessageGuildId();
+  const query = $("mentionMemberSearch").value.trim();
+  if (!guildId || !query) {
+    state.members[guildId] = [];
+    renderMemberMentionResults([]);
+    renderMessagePreview();
+    return;
+  }
+  try {
+    const rows = await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`);
+    state.members[guildId] = rows;
+    renderMemberMentionResults(rows);
+    renderMessagePreview();
+  } catch (err) {
+    state.members[guildId] = [];
+    renderMemberMentionResults([], "Member search unavailable");
+    toast(`Member search unavailable: ${err.message}`);
+  }
 }
 
 function renderMessagePreview() {
@@ -498,11 +650,13 @@ function descriptionNoteOnly(value) {
 async function editSaved(section, guildId, messageId, item) {
   if (section === "messages") {
     await selectGuildAndChannel("msg", guildId, item.channel_id);
+    await loadMessageMentionRoles();
     $("msgEmbed").checked = item.type === "embed";
     $("msgTitle").value = item.title || "";
     $("msgColor").value = item.color || "Blurple";
     $("msgFooter").value = item.footer || "";
     $("msgContent").value = item.content || "";
+    renderMessagePreview();
     setMessageEditMode({ section, guildId, messageId, item });
     setView("messages");
     toast(`Editing message ${messageId}`);
@@ -594,9 +748,18 @@ function wireEvents() {
   $("refreshBtn").addEventListener("click", loadInitial);
   $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
-  $("msgGuild").addEventListener("change", () => loadChannels("msg"));
+  $("msgGuild").addEventListener("change", async () => {
+    clearMentionResults();
+    await Promise.all([loadChannels("msg"), loadMessageMentionRoles()]);
+    renderMessagePreview();
+  });
   ["msgTitle", "msgFooter", "msgContent"].forEach((id) => $(id).addEventListener("input", renderMessagePreview));
   ["msgColor", "msgEmbed"].forEach((id) => $(id).addEventListener("change", renderMessagePreview));
+  $("mentionRoleSearch").addEventListener("input", renderRoleMentionResults);
+  $("mentionMemberSearch").addEventListener("input", () => {
+    clearTimeout(memberSearchTimer);
+    memberSearchTimer = setTimeout(searchMembers, 250);
+  });
   $("rrGuild").addEventListener("change", async () => {
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);
   });

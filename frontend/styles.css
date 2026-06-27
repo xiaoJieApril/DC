@@ -269,6 +269,20 @@ pre {
   width: auto;
 }
 
+.update-list {
+  display: grid;
+  gap: 10px;
+}
+
+.update-item {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: #dbdee1;
+  font-weight: 700;
+}
+
 .bot-control {
   display: flex;
   align-items: center;
@@ -328,6 +342,52 @@ pre {
 
 .preview-box {
   margin: 10px 0 18px;
+}
+
+.mention-tools {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 4px 0 16px;
+}
+
+.mention-tool {
+  min-width: 0;
+}
+
+.mention-results {
+  display: grid;
+  gap: 8px;
+}
+
+.mention-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+}
+
+.mention-result:hover {
+  background: #3b3d44;
+}
+
+.mention-result span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-result small {
+  flex: 0 0 auto;
+  color: var(--soft);
 }
 
 .preview-label {
@@ -394,6 +454,17 @@ pre {
   margin: 4px 0;
   color: #ffffff;
   font-size: 18px;
+}
+
+.mention-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(88, 101, 242, 0.28);
+  color: #dee0ff;
+  font-weight: 800;
 }
 
 .component-preview {
@@ -471,6 +542,10 @@ pre {
   font-size: 13px;
 }
 
+.muted.compact {
+  margin: 0;
+}
+
 @media (max-width: 860px) {
   body {
     grid-template-columns: 1fr;
@@ -499,7 +574,8 @@ pre {
   .grid.two,
   .grid.three,
   .stats,
-  .mapper {
+  .mapper,
+  .mention-tools {
     grid-template-columns: 1fr;
   }
 }

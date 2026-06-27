@@ -562,6 +562,29 @@ def roles(guild_id: str):
     return [item for item in data if item.get("name") != "@everyone" and not item.get("managed")]
 
 
+@app.get("/api/discord/guilds/{guild_id}/members/search", dependencies=[Depends(require_admin)])
+def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=25)):
+    query = urllib.parse.urlencode({"query": q.strip(), "limit": limit})
+    data = discord_request("GET", f"/guilds/{guild_id}/members/search?{query}")
+    rows = []
+    for item in data:
+        user = item.get("user") or {}
+        user_id = user.get("id")
+        if not user_id:
+            continue
+        username = user.get("global_name") or user.get("username") or user_id
+        display_name = item.get("nick") or username
+        rows.append(
+            {
+                "id": user_id,
+                "username": username,
+                "display_name": display_name,
+                "avatar": user.get("avatar"),
+            }
+        )
+    return rows
+
+
 @app.get("/api/discord/guilds/{guild_id}/emojis", dependencies=[Depends(require_admin)])
 def emojis(guild_id: str):
     return discord_request("GET", f"/guilds/{guild_id}/emojis")

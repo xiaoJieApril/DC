@@ -66,6 +66,10 @@
             </div>
           </div>
           <div class="panel">
+            <h2>Latest Update</h2>
+            <div id="latestUpdateList" class="update-list"></div>
+          </div>
+          <div class="panel">
             <h2>Recent Activity</h2>
             <div id="recentList" class="recent-list"></div>
           </div>
@@ -87,6 +91,16 @@
               <label>Title<input id="msgTitle" placeholder="Announcement" /></label>
               <label>Color<select id="msgColor"></select></label>
               <label>Footer<input id="msgFooter" placeholder="Optional footer" /></label>
+            </div>
+            <div class="mention-tools">
+              <div class="mention-tool">
+                <label>Mention Role<input id="mentionRoleSearch" placeholder="Search role name" /></label>
+                <div id="mentionRoleResults" class="mention-results"></div>
+              </div>
+              <div class="mention-tool">
+                <label>Mention Member<input id="mentionMemberSearch" placeholder="Search member name" /></label>
+                <div id="mentionMemberResults" class="mention-results"></div>
+              </div>
             </div>
             <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>
             <div class="preview-box">
