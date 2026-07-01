@@ -111,6 +111,24 @@ function setView(name) {
   };
   $("viewTitle").textContent = titles[name][0];
   $("viewSubtitle").textContent = titles[name][1];
+  if (name === "onboarding") {
+    ensureOnboardingLoaded();
+  }
+}
+
+async function ensureOnboardingLoaded() {
+  try {
+    if (!state.guilds.length) {
+      await loadGuilds();
+      return;
+    }
+    if (!$("obGuild").options.length) {
+      fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
+    }
+    await loadOnboardingControls();
+  } catch (err) {
+    $("obPanelInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+  }
 }
 
 function setMessageEditMode(item = null) {
@@ -327,6 +345,7 @@ async function loadOnboardingRoles() {
 }
 
 async function loadOnboardingControls() {
+  $("obPanelInfo").textContent = "Loading New Member Rules selectors...";
   await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
   try {
     await loadOnboarding();
@@ -336,6 +355,7 @@ async function loadOnboardingControls() {
 }
 
 async function refreshOnboardingControls() {
+  $("obPanelInfo").textContent = "Loading New Member Rules selectors...";
   await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
   await loadOnboarding();
 }
