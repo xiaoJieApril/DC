@@ -81,6 +81,14 @@ function fillSelect(select, rows, labelFn, valueFn) {
   });
 }
 
+function fillSelectMessage(select, message) {
+  select.innerHTML = "";
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = message;
+  select.appendChild(option);
+}
+
 function fillColors() {
   ["msgColor", "rrColor"].forEach((id) => {
     fillSelect($(id), colors, (item) => item, (item) => item);
@@ -150,7 +158,7 @@ async function checkLogin() {
 async function loadInitial() {
   fillColors();
   $("apiBaseInput").value = state.apiBase;
-  await Promise.all([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
+  await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
   renderLatestUpdates();
   renderMessagePreview();
   renderRolePreview();
@@ -237,28 +245,39 @@ async function stopBot() {
 }
 
 async function loadGuilds() {
-  state.guilds = await api("/api/discord/guilds");
+  try {
+    state.guilds = await api("/api/discord/guilds");
+  } catch (err) {
+    fillSelectMessage($("msgGuild"), "Server list unavailable");
+    fillSelectMessage($("rrGuild"), "Server list unavailable");
+    fillSelectMessage($("obGuild"), "Server list unavailable");
+    toast(`Server list unavailable: ${err.message}`);
+    return;
+  }
   fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
-    await Promise.all([
+    await Promise.allSettled([
       loadChannels("msg"),
       loadChannels("rr"),
-      loadChannels("ob"),
       loadMessageMentionRoles(),
       loadRoles(),
-      loadOnboardingRoles(),
       loadEmojis(),
-      loadOnboarding(),
     ]);
+    await loadOnboardingControls();
   }
 }
 
 async function loadChannels(prefix) {
   const guildId = $(`${prefix}Guild`).value;
   if (!guildId) return;
-  state.channels[guildId] = await api(`/api/discord/guilds/${guildId}/channels`);
+  try {
+    state.channels[guildId] = await api(`/api/discord/guilds/${guildId}/channels`);
+  } catch (err) {
+    fillSelectMessage($(`${prefix}Channel`), "Channel list unavailable");
+    throw err;
+  }
   fillSelect(
     $(`${prefix}Channel`),
     state.channels[guildId],
@@ -295,11 +314,38 @@ async function loadMessageMentionRoles() {
 async function loadOnboardingRoles() {
   const guildId = $("obGuild").value;
   if (!guildId) return;
+  try {
+    if (!state.roles[guildId]) {
+      state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
+      state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
+    }
+  } catch (err) {
+    fillSelectMessage($("obRole"), "Role list unavailable");
+    throw err;
+  }
+  fillSelect($("obRole"), state.roles[guildId], (r) => `${r.name} (${r.id})`, (r) => r.id);
+}
+
+async function loadOnboardingControls() {
+  await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
+  try {
+    await loadOnboarding();
+  } catch (err) {
+    $("obPanelInfo").textContent = `Onboarding settings unavailable: ${err.message}`;
+  }
+}
+
+async function refreshOnboardingControls() {
+  await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
+  await loadOnboarding();
+}
+
+async function ensureOnboardingRolesForGuild(guildId) {
+  if (!guildId) return;
   if (!state.roles[guildId]) {
     state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
     state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
   }
-  fillSelect($("obRole"), state.roles[guildId], (r) => `${r.name} (${r.id})`, (r) => r.id);
 }
 
 const onboardingLanguageIds = {
@@ -956,8 +1002,7 @@ function wireEvents() {
     memberSearchTimer = setTimeout(() => searchMembers("rr"), 250);
   });
   $("obGuild").addEventListener("change", async () => {
-    await Promise.all([loadChannels("ob"), loadOnboardingRoles()]);
-    await loadOnboarding();
+    await runAction("Load onboarding server", refreshOnboardingControls);
   });
   $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
   $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
