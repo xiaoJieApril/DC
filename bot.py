@@ -276,6 +276,18 @@ class RoleSelectView(discord.ui.View):
         self.add_item(RoleSelect(message_id, entry, guild))
 
 
+class OnboardingAgreeView(discord.ui.View):
+    def __init__(self, guild_id, language):
+        super().__init__(timeout=900)
+        self.add_item(
+            discord.ui.Button(
+                label="Agree",
+                style=discord.ButtonStyle.success,
+                custom_id=f"onboarding_agree:{guild_id}:{language}",
+            )
+        )
+
+
 registered_role_views = set()
 
 
@@ -304,6 +316,63 @@ def register_role_views():
         print(f"[RR] Registered {registered} persistent role select view(s)")
 
 
+def get_onboarding_entry(config, guild_id):
+    entry = config.get("onboarding", {}).get(str(guild_id), {})
+    if not entry or not entry.get("enabled"):
+        return None
+    return entry
+
+
+def onboarding_language(entry, language):
+    item = (entry.get("languages") or {}).get(str(language))
+    if not item or not item.get("enabled"):
+        return None
+    if not str(item.get("rules") or "").strip():
+        return None
+    return item
+
+
+async def send_onboarding_rules(interaction, entry, language):
+    item = onboarding_language(entry, language)
+    if not item:
+        await interaction.followup.send("This language is not available anymore.", ephemeral=True)
+        return
+    label = item.get("label") or language
+    rules = str(item.get("rules") or "").strip()
+    await interaction.followup.send(
+        content=f"**{label} Rules**\n\n{rules}",
+        view=OnboardingAgreeView(interaction.guild.id, language),
+        ephemeral=True,
+    )
+
+
+async def apply_onboarding_agreement(interaction, entry):
+    role_id = str(entry.get("member_role_id") or "")
+    if not role_id:
+        return "Onboarding is missing the member role. Please contact an admin."
+    try:
+        role = interaction.guild.get_role(int(role_id))
+    except (TypeError, ValueError):
+        role = None
+    if not role:
+        return "The configured member role no longer exists. Please contact an admin."
+    member = interaction.guild.get_member(interaction.user.id) or await fetch_member(interaction.guild, interaction.user.id)
+    if not member:
+        return "I could not find your server member profile. Please try again."
+    if role in member.roles:
+        return f"You already completed onboarding and have **{role.name}**."
+    ok, reason = bot_can_manage_role(interaction.guild, role)
+    if not ok:
+        return reason
+    try:
+        await member.add_roles(role, reason="Accepted onboarding rules")
+        return f"Welcome! **{role.name}** has been added."
+    except discord.Forbidden:
+        return f"I do not have permission to give **{role.name}**."
+    except discord.HTTPException as exc:
+        return f"Could not give **{role.name}**: {exc}"
+
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -317,6 +386,7 @@ reactionrole = bot.create_group("reactionrole", "Manage reaction role messages")
 async def on_ready():
     print(f"[BOT] Online as {bot.user} (ID: {bot.user.id})")
     print(f"[BOT] Serving {len(bot.guilds)} guild(s)")
+    print("[ONBOARDING] Server Members Intent is required for rules-gate role assignment")
     print("[RR] Dropdown role panels are handled by live interaction routing")
 
 
@@ -324,16 +394,39 @@ async def on_ready():
 async def on_interaction(interaction: discord.Interaction):
     data = getattr(interaction, "data", {}) or {}
     custom_id = str(data.get("custom_id", ""))
-    if not (custom_id.startswith("role_select:") or custom_id.startswith("role_button:")):
+    is_role_interaction = custom_id.startswith("role_select:") or custom_id.startswith("role_button:")
+    is_onboarding_interaction = custom_id.startswith("onboarding_language:") or custom_id.startswith("onboarding_agree:")
+    if not (is_role_interaction or is_onboarding_interaction):
         return
 
     try:
         if not interaction.guild:
-            await interaction.response.send_message("This role picker only works inside a server.", ephemeral=True)
+            await interaction.response.send_message("This action only works inside a server.", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
         config = load_config()
+        if custom_id.startswith("onboarding_language:"):
+            entry = get_onboarding_entry(config, interaction.guild.id)
+            if not entry:
+                await interaction.followup.send("Onboarding is not configured right now.", ephemeral=True)
+                return
+            values = [str(value) for value in data.get("values", [])]
+            language = values[0] if values else ""
+            await send_onboarding_rules(interaction, entry, language)
+            return
+
+        if custom_id.startswith("onboarding_agree:"):
+            parts = custom_id.split(":", 2)
+            language = parts[2] if len(parts) > 2 else ""
+            entry = get_onboarding_entry(config, interaction.guild.id)
+            if not entry or not onboarding_language(entry, language):
+                await interaction.followup.send("This onboarding option is not available anymore.", ephemeral=True)
+                return
+            result = await apply_onboarding_agreement(interaction, entry)
+            await interaction.followup.send(result, ephemeral=True)
+            return
+
         if custom_id.startswith("role_button:"):
             _, role_id, entry = find_button_entry(config, interaction.guild.id, custom_id)
             if not entry:
@@ -356,14 +449,14 @@ async def on_interaction(interaction: discord.Interaction):
         result = await apply_role_selection(interaction, entry, values)
         await interaction.followup.send(result, ephemeral=True)
     except Exception as exc:
-        print(f"[RR] Select interaction failed: {exc}")
+        print(f"[INTERACTION] Component interaction failed: {exc}")
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(f"Role update failed: {exc}", ephemeral=True)
+                await interaction.followup.send(f"Action failed: {exc}", ephemeral=True)
             else:
-                await interaction.response.send_message(f"Role update failed: {exc}", ephemeral=True)
+                await interaction.response.send_message(f"Action failed: {exc}", ephemeral=True)
         except Exception as nested_exc:
-            print(f"[RR] Could not report interaction failure: {nested_exc}")
+            print(f"[INTERACTION] Could not report interaction failure: {nested_exc}")
 
 
 @bot.event

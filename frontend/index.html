@@ -19,6 +19,7 @@
       <button class="nav active" data-view="overview">Overview</button>
       <button class="nav" data-view="messages">Send Message</button>
       <button class="nav" data-view="roles">Reaction Roles</button>
+      <button class="nav" data-view="onboarding">New Member Rules</button>
       <button class="nav" data-view="saved">Saved</button>
       <button class="nav" data-view="settings">Settings</button>
       <button id="logoutBtn" class="nav danger">Logout</button>
@@ -72,6 +73,7 @@
             <div class="quick-actions">
               <button data-jump="messages">Send Message</button>
               <button data-jump="roles" class="secondary">Create Role Panel</button>
+              <button data-jump="onboarding" class="secondary">New Member Rules</button>
               <button data-jump="saved" class="secondary">Manage Saved</button>
             </div>
           </div>
@@ -170,6 +172,40 @@
               <button id="postRRBtn">Post Role Panel</button>
               <button id="updateRRBtn" class="secondary hidden">Update Saved Panel</button>
               <button id="cancelRREditBtn" class="secondary hidden">Cancel Edit</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="onboarding" class="view hidden">
+          <div class="panel">
+            <h2>New Member Rules</h2>
+            <div class="grid three">
+              <label>Server<select id="obGuild"></select></label>
+              <label>Panel Channel<select id="obChannel"></select></label>
+              <label>Member Role<select id="obRole"></select></label>
+            </div>
+            <label class="check"><input id="obEnabled" type="checkbox" /> Enable onboarding gate</label>
+            <div class="language-grid">
+              <article class="language-card" data-lang="en">
+                <label class="check"><input id="obLangEnabledEn" type="checkbox" /> English</label>
+                <label>Label<input id="obLangLabelEn" placeholder="English" /></label>
+                <label>Rules<textarea id="obLangRulesEn" rows="5"></textarea></label>
+              </article>
+              <article class="language-card" data-lang="zh">
+                <label class="check"><input id="obLangEnabledZh" type="checkbox" /> Chinese</label>
+                <label>Label<input id="obLangLabelZh" placeholder="中文" /></label>
+                <label>Rules<textarea id="obLangRulesZh" rows="5"></textarea></label>
+              </article>
+              <article class="language-card" data-lang="ms">
+                <label class="check"><input id="obLangEnabledMs" type="checkbox" /> Malay</label>
+                <label>Label<input id="obLangLabelMs" placeholder="Malay" /></label>
+                <label>Rules<textarea id="obLangRulesMs" rows="5"></textarea></label>
+              </article>
+            </div>
+            <p id="obPanelInfo" class="muted">No language panel published yet.</p>
+            <div class="actions">
+              <button id="saveOnboardingBtn" class="secondary">Save Rules</button>
+              <button id="publishOnboardingBtn">Publish Language Panel</button>
             </div>
           </div>
         </section>
