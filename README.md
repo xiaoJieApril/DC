@@ -165,3 +165,4 @@ STORAGE_BACKEND=json
 - 不要 commit `.env`、`data/`、`logs/`。
 - 正式 VPS 請設定 `BOT_CONTROL_MODE=systemd`，避免 dashboard UI 重複啟動 bot。
 - `trycloudflare.com` Quick Tunnel 只適合臨時測試。沒有 domain 時，正式入口請用 Lightsail Static IP。
+- Discord Developer Portal 需要開啟 Server Members Intent，New Member Rules 和 member role 發放才會穩定運作。

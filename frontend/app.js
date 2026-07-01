@@ -9,6 +9,7 @@ const state = {
   mappings: [],
   savedRows: [],
   auditRows: [],
+  onboarding: null,
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
@@ -19,6 +20,9 @@ const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
 const commonEmojis = ["🎮", "✅", "⭐", "🔥", "💬", "🎨", "❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣"];
 // Release notes are frontend-owned for now; no storage or admin editor is needed.
 const latestUpdates = [
+  "New member language rules gate.",
+  "Members can choose language and see private rules.",
+  "Agreeing to rules gives the configured member role.",
   "Send Message can mention roles and members from the dashboard.",
   "Role/member mention tokens are inserted automatically.",
   "Message preview now shows mention chips.",
@@ -93,6 +97,7 @@ function setView(name) {
     overview: ["Overview", "Manage your Discord bot from the web."],
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
+    onboarding: ["New Member Rules", "Configure language rules and the member access role."],
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
   };
@@ -235,8 +240,18 @@ async function loadGuilds() {
   state.guilds = await api("/api/discord/guilds");
   fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
+  fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
-    await Promise.all([loadChannels("msg"), loadChannels("rr"), loadMessageMentionRoles(), loadRoles(), loadEmojis()]);
+    await Promise.all([
+      loadChannels("msg"),
+      loadChannels("rr"),
+      loadChannels("ob"),
+      loadMessageMentionRoles(),
+      loadRoles(),
+      loadOnboardingRoles(),
+      loadEmojis(),
+      loadOnboarding(),
+    ]);
   }
 }
 
@@ -275,6 +290,87 @@ async function loadMessageMentionRoles() {
   }
   renderRoleMentionResults();
   renderMessagePreview();
+}
+
+async function loadOnboardingRoles() {
+  const guildId = $("obGuild").value;
+  if (!guildId) return;
+  if (!state.roles[guildId]) {
+    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
+    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
+  }
+  fillSelect($("obRole"), state.roles[guildId], (r) => `${r.name} (${r.id})`, (r) => r.id);
+}
+
+const onboardingLanguageIds = {
+  en: { enabled: "obLangEnabledEn", label: "obLangLabelEn", rules: "obLangRulesEn" },
+  zh: { enabled: "obLangEnabledZh", label: "obLangLabelZh", rules: "obLangRulesZh" },
+  ms: { enabled: "obLangEnabledMs", label: "obLangLabelMs", rules: "obLangRulesMs" },
+};
+
+function applyOnboardingForm(config) {
+  state.onboarding = config;
+  $("obEnabled").checked = !!config.enabled;
+  if ([...$("obChannel").options].some((option) => option.value === config.channel_id)) {
+    $("obChannel").value = config.channel_id;
+  }
+  if ([...$("obRole").options].some((option) => option.value === config.member_role_id)) {
+    $("obRole").value = config.member_role_id;
+  }
+  Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
+    const item = config.languages?.[code] || {};
+    $(ids.enabled).checked = !!item.enabled;
+    $(ids.label).value = item.label || "";
+    $(ids.rules).value = item.rules || "";
+  });
+  $("obPanelInfo").textContent = config.panel_message_id
+    ? `Language panel message: ${config.panel_message_id}`
+    : "No language panel published yet.";
+}
+
+function collectOnboardingForm() {
+  const languages = {};
+  Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
+    languages[code] = {
+      enabled: $(ids.enabled).checked,
+      label: $(ids.label).value,
+      rules: $(ids.rules).value,
+    };
+  });
+  return {
+    enabled: $("obEnabled").checked,
+    channel_id: $("obChannel").value,
+    member_role_id: $("obRole").value,
+    panel_message_id: state.onboarding?.panel_message_id || "",
+    languages,
+  };
+}
+
+async function loadOnboarding() {
+  const guildId = $("obGuild").value;
+  if (!guildId) return;
+  const config = await api(`/api/onboarding/${guildId}`);
+  applyOnboardingForm(config);
+}
+
+async function saveOnboarding() {
+  const guildId = $("obGuild").value;
+  const config = await api(`/api/onboarding/${guildId}`, {
+    method: "PUT",
+    body: JSON.stringify(collectOnboardingForm()),
+  });
+  applyOnboardingForm(config);
+  toast("New member rules saved.");
+  await loadAuditLogs();
+}
+
+async function publishOnboarding() {
+  await saveOnboarding();
+  const guildId = $("obGuild").value;
+  const result = await api(`/api/onboarding/${guildId}/publish`, { method: "POST" });
+  applyOnboardingForm(result.record);
+  toast(`Language panel published: ${result.message_id}`);
+  await loadAuditLogs();
 }
 
 async function loadEmojis() {
@@ -859,6 +955,12 @@ function wireEvents() {
     openMentionDropdown("rr-member");
     memberSearchTimer = setTimeout(() => searchMembers("rr"), 250);
   });
+  $("obGuild").addEventListener("change", async () => {
+    await Promise.all([loadChannels("ob"), loadOnboardingRoles()]);
+    await loadOnboarding();
+  });
+  $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
+  $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {

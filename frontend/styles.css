@@ -320,6 +320,20 @@ pre {
   align-items: end;
 }
 
+.language-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 8px 0 16px;
+}
+
+.language-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
 .mapping-list,
 .saved-list,
 .recent-list,
@@ -687,6 +701,7 @@ pre {
   .grid.two,
   .grid.three,
   .stats,
+  .language-grid,
   .mapper,
   .mention-tools {
     grid-template-columns: 1fr;
