@@ -324,11 +324,7 @@ pre {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
-<<<<<<< HEAD
   margin: 10px 0 16px;
-=======
-  margin: 8px 0 16px;
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 }
 
 .language-card {
@@ -706,12 +702,8 @@ pre {
   .grid.three,
   .stats,
   .language-grid,
-<<<<<<< HEAD
-  .mapper {
-=======
   .mapper,
   .mention-tools {
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     grid-template-columns: 1fr;
   }
 }

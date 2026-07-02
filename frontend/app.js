@@ -13,11 +13,7 @@ const state = {
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
-<<<<<<< HEAD
-  onboarding: null,
-=======
   mentionDropdown: "",
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 };
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
@@ -109,11 +105,7 @@ function setView(name) {
     overview: ["Overview", "Manage your Discord bot from the web."],
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
-<<<<<<< HEAD
     onboarding: ["New Member Rules", "Language-role rules gate for fan role."],
-=======
-    onboarding: ["New Member Rules", "Configure language rules and the member access role."],
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
   };
@@ -135,7 +127,7 @@ async function ensureOnboardingLoaded() {
     }
     await loadOnboardingControls();
   } catch (err) {
-    $("obPanelInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+    $("obInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
   }
 }
 
@@ -284,9 +276,6 @@ async function loadGuilds() {
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
-<<<<<<< HEAD
-    await Promise.allSettled([loadChannels("msg"), loadChannels("rr"), loadRoles(), loadEmojis(), loadOnboardingRoles(), loadOnboarding()]);
-=======
     await Promise.allSettled([
       loadChannels("msg"),
       loadChannels("rr"),
@@ -295,7 +284,6 @@ async function loadGuilds() {
       loadEmojis(),
     ]);
     await loadOnboardingControls();
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
   }
 }
 
@@ -329,47 +317,6 @@ async function loadRoles() {
   );
 }
 
-<<<<<<< HEAD
-async function loadOnboardingRoles() {
-  const guildId = $("obGuild").value;
-  if (!guildId) return;
-  state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-  state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
-  ["obFanRole", "obLangRoleZh", "obLangRoleEn", "obLangRoleJa"].forEach((id) => {
-    fillSelect($(id), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
-  });
-}
-
-const onboardingLanguageIds = {
-  zh: { enabled: "obLangEnabledZh", role: "obLangRoleZh", rules: "obLangRulesZh", label: "中文" },
-  en: { enabled: "obLangEnabledEn", role: "obLangRoleEn", rules: "obLangRulesEn", label: "English" },
-  ja: { enabled: "obLangEnabledJa", role: "obLangRoleJa", rules: "obLangRulesJa", label: "日本語" },
-};
-
-async function loadOnboarding() {
-  const guildId = $("obGuild").value;
-  if (!guildId) return;
-  const config = await api(`/api/onboarding/${guildId}`);
-  state.onboarding = config;
-  $("obEnabled").checked = !!config.enabled;
-  $("obFanRole").value = config.fan_role_id || "";
-  Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
-    const item = config.languages?.[code] || {};
-    $(ids.enabled).checked = !!item.enabled;
-    $(ids.role).value = item.language_role_id || "";
-    $(ids.rules).value = item.rules || "";
-  });
-}
-
-function collectOnboarding() {
-  const languages = {};
-  Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
-    languages[code] = {
-      label: ids.label,
-      enabled: $(ids.enabled).checked,
-      language_role_id: $(ids.role).value,
-=======
 async function loadMessageMentionRoles() {
   // Reuse the roles endpoint so role mentions work without a separate API.
   const guildId = $("msgGuild").value;
@@ -385,93 +332,71 @@ async function loadMessageMentionRoles() {
 async function loadOnboardingRoles() {
   const guildId = $("obGuild").value;
   if (!guildId) return;
-  try {
-    if (!state.roles[guildId]) {
-      state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-      state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-    }
-  } catch (err) {
-    fillSelectMessage($("obRole"), "Role list unavailable");
-    throw err;
-  }
-  fillSelect($("obRole"), state.roles[guildId], (r) => `${r.name} (${r.id})`, (r) => r.id);
-}
-
-async function loadOnboardingControls() {
-  $("obPanelInfo").textContent = "Loading New Member Rules selectors...";
-  await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
-  try {
-    await loadOnboarding();
-  } catch (err) {
-    $("obPanelInfo").textContent = `Onboarding settings unavailable: ${err.message}`;
-  }
-}
-
-async function refreshOnboardingControls() {
-  $("obPanelInfo").textContent = "Loading New Member Rules selectors...";
-  await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
-  await loadOnboarding();
-}
-
-async function ensureOnboardingRolesForGuild(guildId) {
-  if (!guildId) return;
   if (!state.roles[guildId]) {
     state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
     state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
   }
+  const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
+  ["obFanRole", "obLangRoleZh", "obLangRoleEn", "obLangRoleJa"].forEach((id) => {
+    fillSelect($(id), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+  });
+}
+
+async function loadOnboardingControls() {
+  $("obInfo").textContent = "Loading New Member Rules selectors...";
+  try {
+    await loadOnboardingRoles();
+    await loadOnboarding();
+  } catch (err) {
+    $("obInfo").textContent = `Onboarding settings unavailable: ${err.message}`;
+  }
+}
+
+async function refreshOnboardingControls() {
+  $("obInfo").textContent = "Loading New Member Rules selectors...";
+  await loadOnboardingRoles();
+  await loadOnboarding();
 }
 
 const onboardingLanguageIds = {
-  en: { enabled: "obLangEnabledEn", label: "obLangLabelEn", rules: "obLangRulesEn" },
-  zh: { enabled: "obLangEnabledZh", label: "obLangLabelZh", rules: "obLangRulesZh" },
-  ms: { enabled: "obLangEnabledMs", label: "obLangLabelMs", rules: "obLangRulesMs" },
+  zh: { enabled: "obLangEnabledZh", role: "obLangRoleZh", rules: "obLangRulesZh", label: "中文" },
+  en: { enabled: "obLangEnabledEn", role: "obLangRoleEn", rules: "obLangRulesEn", label: "English" },
+  ja: { enabled: "obLangEnabledJa", role: "obLangRoleJa", rules: "obLangRulesJa", label: "日本語" },
 };
 
 function applyOnboardingForm(config) {
   state.onboarding = config;
   $("obEnabled").checked = !!config.enabled;
-  if ([...$("obChannel").options].some((option) => option.value === config.channel_id)) {
-    $("obChannel").value = config.channel_id;
-  }
-  if ([...$("obRole").options].some((option) => option.value === config.member_role_id)) {
-    $("obRole").value = config.member_role_id;
-  }
+  $("obFanRole").value = config.fan_role_id || config.member_role_id || "";
+  // Each enabled language links a language role to the rules DM sent by the bot.
   Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
     const item = config.languages?.[code] || {};
     $(ids.enabled).checked = !!item.enabled;
-    $(ids.label).value = item.label || "";
+    $(ids.role).value = item.language_role_id || "";
     $(ids.rules).value = item.rules || "";
   });
-  $("obPanelInfo").textContent = config.panel_message_id
-    ? `Language panel message: ${config.panel_message_id}`
-    : "No language panel published yet.";
+  $("obInfo").textContent = "Members without fan role will receive rules when they have one of the language roles.";
 }
 
 function collectOnboardingForm() {
   const languages = {};
   Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
     languages[code] = {
+      label: ids.label,
       enabled: $(ids.enabled).checked,
-      label: $(ids.label).value,
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
+      language_role_id: $(ids.role).value,
       rules: $(ids.rules).value,
     };
   });
   return {
     enabled: $("obEnabled").checked,
-<<<<<<< HEAD
     fan_role_id: $("obFanRole").value,
-=======
-    channel_id: $("obChannel").value,
-    member_role_id: $("obRole").value,
+    member_role_id: $("obFanRole").value,
     panel_message_id: state.onboarding?.panel_message_id || "",
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     languages,
   };
 }
 
-<<<<<<< HEAD
-=======
 async function loadOnboarding() {
   const guildId = $("obGuild").value;
   if (!guildId) return;
@@ -479,32 +404,15 @@ async function loadOnboarding() {
   applyOnboardingForm(config);
 }
 
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 async function saveOnboarding() {
   const guildId = $("obGuild").value;
   const config = await api(`/api/onboarding/${guildId}`, {
     method: "PUT",
-<<<<<<< HEAD
-    body: JSON.stringify(collectOnboarding()),
-  });
-  state.onboarding = config;
-  toast("New member rules saved.");
-=======
     body: JSON.stringify(collectOnboardingForm()),
   });
   applyOnboardingForm(config);
   toast("New member rules saved.");
   await loadAuditLogs();
-}
-
-async function publishOnboarding() {
-  await saveOnboarding();
-  const guildId = $("obGuild").value;
-  const result = await api(`/api/onboarding/${guildId}/publish`, { method: "POST" });
-  applyOnboardingForm(result.record);
-  toast(`Language panel published: ${result.message_id}`);
-  await loadAuditLogs();
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 }
 
 async function loadEmojis() {
@@ -1041,12 +949,6 @@ function wireEvents() {
     await Promise.all([loadChannels("msg"), loadMessageMentionRoles()]);
     renderMessagePreview();
   });
-<<<<<<< HEAD
-  $("obGuild").addEventListener("change", async () => {
-    await Promise.all([loadOnboardingRoles(), loadOnboarding()]);
-  });
-  $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
-=======
   ["msgTitle", "msgFooter", "msgContent"].forEach((id) => $(id).addEventListener("input", renderMessagePreview));
   ["msgColor", "msgEmbed"].forEach((id) => $(id).addEventListener("change", renderMessagePreview));
   $("mentionRoleSearch").addEventListener("focus", () => {
@@ -1099,8 +1001,6 @@ function wireEvents() {
     await runAction("Load onboarding server", refreshOnboardingControls);
   });
   $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
-  $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {

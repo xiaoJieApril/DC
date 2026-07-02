@@ -16,10 +16,7 @@ DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
     "onboarding": {},
-<<<<<<< HEAD
-=======
     "audit_logs": [],
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 }
 
 
@@ -37,14 +34,12 @@ def storage_name():
 def normalize_config(data):
     if not isinstance(data, dict):
         return deepcopy(DEFAULT_CONFIG)
+    # Keep every JSON-backed feature section available after config upgrades.
     return {
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
-<<<<<<< HEAD
-=======
         "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     }
 
 

@@ -48,6 +48,7 @@
           <button id="refreshBtn" class="secondary">Refresh</button>
         </header>
 
+        <!-- Overview: bot status, quick actions, release notes, and health checks. -->
         <section id="overview" class="view">
           <div class="stats">
             <article class="stat"><span>Storage</span><strong>SQLite</strong></article>
@@ -92,6 +93,7 @@
           </div>
         </section>
 
+        <!-- Send Message: compose announcements, insert mentions, and preview payloads. -->
         <section id="messages" class="view hidden">
           <div class="panel">
             <h2>Send Message</h2>
@@ -129,6 +131,7 @@
           </div>
         </section>
 
+        <!-- Reaction Roles: create manual dropdown, button, or reaction role panels. -->
         <section id="roles" class="view hidden">
           <div class="panel">
             <h2>Reaction Role Panel</h2>
@@ -176,10 +179,10 @@
           </div>
         </section>
 
+        <!-- New Member Rules: map language roles to rules and grant the fan role after agreement. -->
         <section id="onboarding" class="view hidden">
           <div class="panel">
             <h2>New Member Rules</h2>
-<<<<<<< HEAD
             <div class="grid two">
               <label>Server<select id="obGuild"></select></label>
               <label>Fan Role<select id="obFanRole"></select></label>
@@ -205,39 +208,11 @@
             <p id="obInfo" class="muted">Members without fan role will receive rules when they have one of the language roles.</p>
             <div class="actions">
               <button id="saveOnboardingBtn">Save New Member Rules</button>
-=======
-            <div class="grid three">
-              <label>Server<select id="obGuild"></select></label>
-              <label>Panel Channel<select id="obChannel"></select></label>
-              <label>Member Role<select id="obRole"></select></label>
-            </div>
-            <label class="check"><input id="obEnabled" type="checkbox" /> Enable onboarding gate</label>
-            <div class="language-grid">
-              <article class="language-card" data-lang="en">
-                <label class="check"><input id="obLangEnabledEn" type="checkbox" /> English</label>
-                <label>Label<input id="obLangLabelEn" placeholder="English" /></label>
-                <label>Rules<textarea id="obLangRulesEn" rows="5"></textarea></label>
-              </article>
-              <article class="language-card" data-lang="zh">
-                <label class="check"><input id="obLangEnabledZh" type="checkbox" /> Chinese</label>
-                <label>Label<input id="obLangLabelZh" placeholder="中文" /></label>
-                <label>Rules<textarea id="obLangRulesZh" rows="5"></textarea></label>
-              </article>
-              <article class="language-card" data-lang="ms">
-                <label class="check"><input id="obLangEnabledMs" type="checkbox" /> Malay</label>
-                <label>Label<input id="obLangLabelMs" placeholder="Malay" /></label>
-                <label>Rules<textarea id="obLangRulesMs" rows="5"></textarea></label>
-              </article>
-            </div>
-            <p id="obPanelInfo" class="muted">No language panel published yet.</p>
-            <div class="actions">
-              <button id="saveOnboardingBtn" class="secondary">Save Rules</button>
-              <button id="publishOnboardingBtn">Publish Language Panel</button>
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
             </div>
           </div>
         </section>
 
+        <!-- Saved: review previously sent messages, role panels, and admin activity. -->
         <section id="saved" class="view hidden">
           <div class="panel">
             <h2>Saved Messages & Panels</h2>
@@ -249,6 +224,7 @@
           </div>
         </section>
 
+        <!-- Settings: browser-local dashboard API URL configuration. -->
         <section id="settings" class="view hidden">
           <div class="panel">
             <h2>Settings</h2>
@@ -261,12 +237,7 @@
     </main>
 
     <div id="toast" class="toast hidden"></div>
-<<<<<<< HEAD
     <script src="./config.js?v=20260702-language-fan-gate"></script>
     <script src="./app.js?v=20260702-language-fan-gate"></script>
-=======
-    <script src="./config.js?v=20260702-new-member-rules"></script>
-    <script src="./app.js?v=20260702-new-member-rules"></script>
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
   </body>
 </html>

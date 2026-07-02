@@ -19,11 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-<<<<<<< HEAD
-from storage import delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
-=======
 from storage import append_audit_log, delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
 
 load_dotenv()
@@ -39,27 +35,9 @@ COLOR_MAP = {
 }
 DEFAULT_RR_DESCRIPTION = "使用下拉式選單來更改名字顏色"
 DEFAULT_ONBOARDING_LANGUAGES = {
-<<<<<<< HEAD
     "zh": {"label": "中文", "rules": "請閱讀規則並點擊 Agree 取得 fan role。", "enabled": True, "language_role_id": ""},
     "en": {"label": "English", "rules": "Please read the rules and click Agree to receive the fan role.", "enabled": True, "language_role_id": ""},
     "ja": {"label": "日本語", "rules": "ルールを読んで Agree を押すと fan role を受け取れます。", "enabled": True, "language_role_id": ""},
-=======
-    "en": {
-        "label": "English",
-        "rules": "Welcome! Please read the server rules and click Agree to unlock the server.",
-        "enabled": True,
-    },
-    "zh": {
-        "label": "中文",
-        "rules": "歡迎加入！請閱讀伺服器規則，然後點擊 Agree 以解鎖伺服器。",
-        "enabled": True,
-    },
-    "ms": {
-        "label": "Malay",
-        "rules": "Selamat datang! Sila baca peraturan server dan klik Agree untuk membuka akses.",
-        "enabled": True,
-    },
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 }
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -138,21 +116,15 @@ class OnboardingLanguagePayload(BaseModel):
     label: str = ""
     rules: str = ""
     enabled: bool = True
-<<<<<<< HEAD
     language_role_id: str = ""
-=======
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
 
 class OnboardingPayload(BaseModel):
     enabled: bool = False
-<<<<<<< HEAD
     fan_role_id: str = ""
-=======
     channel_id: str = ""
     member_role_id: str = ""
     panel_message_id: str = ""
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     languages: dict[str, OnboardingLanguagePayload] = Field(default_factory=dict)
 
 
@@ -563,15 +535,11 @@ def model_to_dict(value):
 def default_onboarding_config():
     return {
         "enabled": False,
-<<<<<<< HEAD
         "fan_role_id": "",
-        "languages": {code: dict(item) for code, item in DEFAULT_ONBOARDING_LANGUAGES.items()},
-=======
         "channel_id": "",
         "member_role_id": "",
         "panel_message_id": "",
         "languages": {code: dict(value) for code, value in DEFAULT_ONBOARDING_LANGUAGES.items()},
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     }
 
 
@@ -579,25 +547,19 @@ def normalize_onboarding_config(value):
     config = default_onboarding_config()
     if not isinstance(value, dict):
         return config
+    # Normalize both the current language-role gate and older panel fields.
     config["enabled"] = bool(value.get("enabled", config["enabled"]))
-<<<<<<< HEAD
     config["fan_role_id"] = str(value.get("fan_role_id") or value.get("member_role_id") or "")
-=======
     config["channel_id"] = str(value.get("channel_id", config["channel_id"]) or "")
-    config["member_role_id"] = str(value.get("member_role_id", config["member_role_id"]) or "")
+    config["member_role_id"] = str(value.get("member_role_id") or value.get("fan_role_id") or "")
     config["panel_message_id"] = str(value.get("panel_message_id", config["panel_message_id"]) or "")
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     languages = value.get("languages", {})
     if isinstance(languages, dict):
         for code, item in languages.items():
             clean_code = str(code).strip().lower()
             if not clean_code:
                 continue
-<<<<<<< HEAD
             base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False, "language_role_id": ""})
-=======
-            base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False})
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
             if isinstance(item, BaseModel):
                 item = model_to_dict(item)
             if isinstance(item, dict):
@@ -605,67 +567,11 @@ def normalize_onboarding_config(value):
                     "label": str(item.get("label", base.get("label", clean_code)) or ""),
                     "rules": str(item.get("rules", base.get("rules", "")) or ""),
                     "enabled": bool(item.get("enabled", base.get("enabled", False))),
-<<<<<<< HEAD
                     "language_role_id": str(item.get("language_role_id", base.get("language_role_id", "")) or ""),
-=======
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
                 }
     return config
 
 
-<<<<<<< HEAD
-=======
-def enabled_onboarding_languages(config):
-    rows = []
-    for code, item in (config.get("languages") or {}).items():
-        label = str(item.get("label") or code).strip()
-        rules = str(item.get("rules") or "").strip()
-        if item.get("enabled") and label and rules:
-            rows.append((str(code), label, rules))
-    return rows[:25]
-
-
-def onboarding_panel_payload(guild_id, config):
-    languages = enabled_onboarding_languages(config)
-    if not languages:
-        raise HTTPException(status_code=400, detail="Enable at least one language with rules text")
-    options = [
-        {
-            "label": label[:100],
-            "value": code[:100],
-            "description": "Read the rules in this language"[:100],
-        }
-        for code, label, _ in languages
-    ]
-    return {
-        "content": None,
-        "embeds": [
-            {
-                "title": "Choose your rules language",
-                "description": "Select a language below. The rules will be shown privately, then Agree to unlock the server.",
-                "color": COLOR_MAP["Blurple"],
-            }
-        ],
-        "components": [
-            {
-                "type": 1,
-                "components": [
-                    {
-                        "type": 3,
-                        "custom_id": f"onboarding_language:{guild_id}",
-                        "placeholder": "Select language",
-                        "min_values": 1,
-                        "max_values": 1,
-                        "options": options,
-                    }
-                ],
-            }
-        ],
-        "allowed_mentions": {"parse": []},
-    }
-
-
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 @app.get("/api/health")
 def health():
     return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
@@ -764,11 +670,6 @@ def saved():
     return load_config()
 
 
-<<<<<<< HEAD
-@app.get("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
-def get_onboarding(guild_id: str):
-    return normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
-=======
 @app.get("/api/audit-logs", dependencies=[Depends(require_admin)])
 def audit_logs(limit: int = Query(50, ge=1, le=100)):
     return load_config().get("audit_logs", [])[:limit]
@@ -776,24 +677,18 @@ def audit_logs(limit: int = Query(50, ge=1, le=100)):
 
 @app.get("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
 def get_onboarding(guild_id: str):
+    # Load the fan-role gate settings for the selected Discord server.
     config = load_config()
     return normalize_onboarding_config(config.get("onboarding", {}).get(str(guild_id), {}))
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
 
 @app.put("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
 def save_onboarding(guild_id: str, payload: OnboardingPayload):
-<<<<<<< HEAD
-    config = normalize_onboarding_config(model_to_dict(payload))
-    upsert_onboarding(guild_id, config)
-    return config
-
-
-=======
     existing = load_config().get("onboarding", {}).get(str(guild_id), {})
     data = model_to_dict(payload)
     if not data.get("panel_message_id"):
         data["panel_message_id"] = existing.get("panel_message_id", "")
+    # Save the dashboard-facing gate without dropping older panel metadata.
     config = normalize_onboarding_config(data)
     upsert_onboarding(guild_id, config)
     append_audit_log(
@@ -807,48 +702,6 @@ def save_onboarding(guild_id: str, payload: OnboardingPayload):
     return config
 
 
-@app.post("/api/onboarding/{guild_id}/publish", dependencies=[Depends(require_admin)])
-def publish_onboarding(guild_id: str):
-    config = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
-    if not config.get("enabled"):
-        raise HTTPException(status_code=400, detail="Enable onboarding before publishing")
-    channel_id = str(config.get("channel_id") or "")
-    if not channel_id.isdigit():
-        raise HTTPException(status_code=400, detail="Choose an onboarding channel")
-    if not str(config.get("member_role_id") or "").isdigit():
-        raise HTTPException(status_code=400, detail="Choose the member role to assign")
-    channel = discord_request("GET", f"/channels/{channel_id}")
-    if str(channel.get("guild_id")) != str(guild_id):
-        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
-
-    payload = onboarding_panel_payload(guild_id, config)
-    panel_message_id = str(config.get("panel_message_id") or "")
-    message = None
-    if panel_message_id:
-        try:
-            message = discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            panel_message_id = ""
-    if not panel_message_id:
-        message = discord_request("POST", f"/channels/{channel_id}/messages", payload)
-        panel_message_id = message["id"]
-
-    config["panel_message_id"] = panel_message_id
-    upsert_onboarding(guild_id, config)
-    append_audit_log(
-        "published",
-        "onboarding",
-        guild_id,
-        panel_message_id,
-        {"channel_id": channel_id, "languages": [code for code, _, _ in enabled_onboarding_languages(config)]},
-        request_actor(),
-    )
-    return {"ok": True, "message_id": panel_message_id, "guild_id": guild_id, "record": config}
-
-
->>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 @app.post("/api/messages", dependencies=[Depends(require_admin)])
 def send_message(payload: MessagePayload):
     if not payload.channel_id.isdigit():
