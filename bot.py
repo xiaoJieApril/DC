@@ -276,14 +276,14 @@ class RoleSelectView(discord.ui.View):
         self.add_item(RoleSelect(message_id, entry, guild))
 
 
-class OnboardingFanAgreeView(discord.ui.View):
+class OnboardingAgreeView(discord.ui.View):
     def __init__(self, guild_id, language):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(
                 label="Agree",
                 style=discord.ButtonStyle.success,
-                custom_id=f"onboarding_fan_agree:{guild_id}:{language}",
+                custom_id=f"onboarding_agree:{guild_id}:{language}",
             )
         )
 
@@ -323,78 +323,50 @@ def get_onboarding_entry(config, guild_id):
     return entry
 
 
-def member_has_role(member, role_id):
-    return any(str(role.id) == str(role_id) for role in getattr(member, "roles", []))
+def onboarding_language(entry, language):
+    item = (entry.get("languages") or {}).get(str(language))
+    if not item or not item.get("enabled"):
+        return None
+    if not str(item.get("rules") or "").strip():
+        return None
+    return item
 
 
-def member_onboarding_language(entry, member):
-    for language, item in (entry.get("languages") or {}).items():
-        if not item.get("enabled"):
-            continue
-        role_id = str(item.get("language_role_id") or "")
-        if role_id and member_has_role(member, role_id):
-            return str(language), item
-    return "", None
-
-
-async def send_language_rules_dm(guild, member, language, item):
+async def send_onboarding_rules(interaction, entry, language):
+    item = onboarding_language(entry, language)
+    if not item:
+        await interaction.followup.send("This language is not available anymore.", ephemeral=True)
+        return
+    label = item.get("label") or language
     rules = str(item.get("rules") or "").strip()
-    label = str(item.get("label") or language)
-    if not rules:
-        return
+    await interaction.followup.send(
+        content=f"**{label} Rules**\n\n{rules}",
+        view=OnboardingAgreeView(interaction.guild.id, language),
+        ephemeral=True,
+    )
+
+
+async def apply_onboarding_agreement(interaction, entry):
+    role_id = str(entry.get("member_role_id") or "")
+    if not role_id:
+        return "Onboarding is missing the member role. Please contact an admin."
     try:
-        await member.send(
-            f"**{guild.name} - {label} Rules**\n\n{rules}",
-            view=OnboardingFanAgreeView(guild.id, language),
-        )
-        print(f"[ONBOARDING] Sent {language} rules to {member}")
-    except discord.Forbidden:
-        print(f"[ONBOARDING] Could not DM {member}; user may have DMs disabled")
-    except discord.HTTPException as exc:
-        print(f"[ONBOARDING] Failed to DM {member}: {exc}")
-
-
-async def maybe_send_onboarding_rules(member):
-    if getattr(member, "bot", False) or not member.guild:
-        return
-    config = load_config()
-    entry = get_onboarding_entry(config, member.guild.id)
-    if not entry:
-        return
-    fan_role_id = str(entry.get("fan_role_id") or entry.get("member_role_id") or "")
-    if not fan_role_id or member_has_role(member, fan_role_id):
-        return
-    language, item = member_onboarding_language(entry, member)
-    if language and item:
-        await send_language_rules_dm(member.guild, member, language, item)
-
-
-async def apply_fan_agreement(interaction, guild_id, language):
-    guild = bot.get_guild(int(guild_id)) if str(guild_id).isdigit() else None
-    if not guild:
-        return "I could not find the server. Please contact an admin."
-    config = load_config()
-    entry = get_onboarding_entry(config, guild.id)
-    if not entry:
-        return "Onboarding is not enabled right now."
-    item = (entry.get("languages") or {}).get(str(language), {})
-    if not item.get("enabled"):
-        return "This rules language is not available anymore."
-    fan_role_id = str(entry.get("fan_role_id") or entry.get("member_role_id") or "")
-    role = guild.get_role(int(fan_role_id)) if fan_role_id.isdigit() else None
+        role = interaction.guild.get_role(int(role_id))
+    except (TypeError, ValueError):
+        role = None
     if not role:
-        return "The fan role is not configured correctly. Please contact an admin."
-    member = guild.get_member(interaction.user.id) or await fetch_member(guild, interaction.user.id)
+        return "The configured member role no longer exists. Please contact an admin."
+    member = interaction.guild.get_member(interaction.user.id) or await fetch_member(interaction.guild, interaction.user.id)
     if not member:
-        return "I could not find your server profile. Please try again."
+        return "I could not find your server member profile. Please try again."
     if role in member.roles:
-        return f"You already have **{role.name}**."
-    ok, reason = bot_can_manage_role(guild, role)
+        return f"You already completed onboarding and have **{role.name}**."
+    ok, reason = bot_can_manage_role(interaction.guild, role)
     if not ok:
         return reason
     try:
-        await member.add_roles(role, reason="Accepted language rules")
-        return f"Done! You now have **{role.name}**."
+        await member.add_roles(role, reason="Accepted onboarding rules")
+        return f"Welcome! **{role.name}** has been added."
     except discord.Forbidden:
         return f"I do not have permission to give **{role.name}**."
     except discord.HTTPException as exc:
@@ -414,7 +386,7 @@ reactionrole = bot.create_group("reactionrole", "Manage reaction role messages")
 async def on_ready():
     print(f"[BOT] Online as {bot.user} (ID: {bot.user.id})")
     print(f"[BOT] Serving {len(bot.guilds)} guild(s)")
-    print("[ONBOARDING] Members intent is required for language-role fan gate")
+    print("[ONBOARDING] Server Members Intent is required for rules-gate role assignment")
     print("[RR] Dropdown role panels are handled by live interaction routing")
 
 
@@ -422,30 +394,39 @@ async def on_ready():
 async def on_interaction(interaction: discord.Interaction):
     data = getattr(interaction, "data", {}) or {}
     custom_id = str(data.get("custom_id", ""))
-    if custom_id.startswith("onboarding_fan_agree:"):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            parts = custom_id.split(":", 2)
-            result = await apply_fan_agreement(interaction, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
-            await interaction.followup.send(result, ephemeral=True)
-        except Exception as exc:
-            print(f"[ONBOARDING] Agree failed: {exc}")
-            if interaction.response.is_done():
-                await interaction.followup.send(f"Action failed: {exc}", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"Action failed: {exc}", ephemeral=True)
-        return
-
-    if not (custom_id.startswith("role_select:") or custom_id.startswith("role_button:")):
+    is_role_interaction = custom_id.startswith("role_select:") or custom_id.startswith("role_button:")
+    is_onboarding_interaction = custom_id.startswith("onboarding_language:") or custom_id.startswith("onboarding_agree:")
+    if not (is_role_interaction or is_onboarding_interaction):
         return
 
     try:
         if not interaction.guild:
-            await interaction.response.send_message("This role picker only works inside a server.", ephemeral=True)
+            await interaction.response.send_message("This action only works inside a server.", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
         config = load_config()
+        if custom_id.startswith("onboarding_language:"):
+            entry = get_onboarding_entry(config, interaction.guild.id)
+            if not entry:
+                await interaction.followup.send("Onboarding is not configured right now.", ephemeral=True)
+                return
+            values = [str(value) for value in data.get("values", [])]
+            language = values[0] if values else ""
+            await send_onboarding_rules(interaction, entry, language)
+            return
+
+        if custom_id.startswith("onboarding_agree:"):
+            parts = custom_id.split(":", 2)
+            language = parts[2] if len(parts) > 2 else ""
+            entry = get_onboarding_entry(config, interaction.guild.id)
+            if not entry or not onboarding_language(entry, language):
+                await interaction.followup.send("This onboarding option is not available anymore.", ephemeral=True)
+                return
+            result = await apply_onboarding_agreement(interaction, entry)
+            await interaction.followup.send(result, ephemeral=True)
+            return
+
         if custom_id.startswith("role_button:"):
             _, role_id, entry = find_button_entry(config, interaction.guild.id, custom_id)
             if not entry:
@@ -468,14 +449,14 @@ async def on_interaction(interaction: discord.Interaction):
         result = await apply_role_selection(interaction, entry, values)
         await interaction.followup.send(result, ephemeral=True)
     except Exception as exc:
-        print(f"[RR] Select interaction failed: {exc}")
+        print(f"[INTERACTION] Component interaction failed: {exc}")
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(f"Role update failed: {exc}", ephemeral=True)
+                await interaction.followup.send(f"Action failed: {exc}", ephemeral=True)
             else:
-                await interaction.response.send_message(f"Role update failed: {exc}", ephemeral=True)
+                await interaction.response.send_message(f"Action failed: {exc}", ephemeral=True)
         except Exception as nested_exc:
-            print(f"[RR] Could not report interaction failure: {nested_exc}")
+            print(f"[INTERACTION] Could not report interaction failure: {nested_exc}")
 
 
 @bot.event

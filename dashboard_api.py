@@ -19,7 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
+<<<<<<< HEAD
 from storage import delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
+=======
+from storage import append_audit_log, delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
 
 load_dotenv()
@@ -35,9 +39,27 @@ COLOR_MAP = {
 }
 DEFAULT_RR_DESCRIPTION = "使用下拉式選單來更改名字顏色"
 DEFAULT_ONBOARDING_LANGUAGES = {
+<<<<<<< HEAD
     "zh": {"label": "中文", "rules": "請閱讀規則並點擊 Agree 取得 fan role。", "enabled": True, "language_role_id": ""},
     "en": {"label": "English", "rules": "Please read the rules and click Agree to receive the fan role.", "enabled": True, "language_role_id": ""},
     "ja": {"label": "日本語", "rules": "ルールを読んで Agree を押すと fan role を受け取れます。", "enabled": True, "language_role_id": ""},
+=======
+    "en": {
+        "label": "English",
+        "rules": "Welcome! Please read the server rules and click Agree to unlock the server.",
+        "enabled": True,
+    },
+    "zh": {
+        "label": "中文",
+        "rules": "歡迎加入！請閱讀伺服器規則，然後點擊 Agree 以解鎖伺服器。",
+        "enabled": True,
+    },
+    "ms": {
+        "label": "Malay",
+        "rules": "Selamat datang! Sila baca peraturan server dan klik Agree untuk membuka akses.",
+        "enabled": True,
+    },
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 }
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -107,7 +129,7 @@ class ReactionRolePayload(BaseModel):
     description: str = DEFAULT_RR_DESCRIPTION
     mode: str = "dropdown"
     use_embed: bool = True
-    include_role_mentions: bool = True
+    include_role_mentions: bool = False
     color: str = "Blurple"
     mappings: list[MappingPayload]
 
@@ -116,12 +138,21 @@ class OnboardingLanguagePayload(BaseModel):
     label: str = ""
     rules: str = ""
     enabled: bool = True
+<<<<<<< HEAD
     language_role_id: str = ""
+=======
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
 
 class OnboardingPayload(BaseModel):
     enabled: bool = False
+<<<<<<< HEAD
     fan_role_id: str = ""
+=======
+    channel_id: str = ""
+    member_role_id: str = ""
+    panel_message_id: str = ""
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     languages: dict[str, OnboardingLanguagePayload] = Field(default_factory=dict)
 
 
@@ -316,6 +347,10 @@ def require_logged_in(request: Request):
     if not is_admin_request(request):
         raise HTTPException(status_code=401, detail="Not logged in")
     return True
+
+
+def request_actor():
+    return env("ADMIN_USERNAME", "admin") or "admin"
 
 
 def token():
@@ -528,8 +563,15 @@ def model_to_dict(value):
 def default_onboarding_config():
     return {
         "enabled": False,
+<<<<<<< HEAD
         "fan_role_id": "",
         "languages": {code: dict(item) for code, item in DEFAULT_ONBOARDING_LANGUAGES.items()},
+=======
+        "channel_id": "",
+        "member_role_id": "",
+        "panel_message_id": "",
+        "languages": {code: dict(value) for code, value in DEFAULT_ONBOARDING_LANGUAGES.items()},
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     }
 
 
@@ -538,14 +580,24 @@ def normalize_onboarding_config(value):
     if not isinstance(value, dict):
         return config
     config["enabled"] = bool(value.get("enabled", config["enabled"]))
+<<<<<<< HEAD
     config["fan_role_id"] = str(value.get("fan_role_id") or value.get("member_role_id") or "")
+=======
+    config["channel_id"] = str(value.get("channel_id", config["channel_id"]) or "")
+    config["member_role_id"] = str(value.get("member_role_id", config["member_role_id"]) or "")
+    config["panel_message_id"] = str(value.get("panel_message_id", config["panel_message_id"]) or "")
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     languages = value.get("languages", {})
     if isinstance(languages, dict):
         for code, item in languages.items():
             clean_code = str(code).strip().lower()
             if not clean_code:
                 continue
+<<<<<<< HEAD
             base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False, "language_role_id": ""})
+=======
+            base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False})
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
             if isinstance(item, BaseModel):
                 item = model_to_dict(item)
             if isinstance(item, dict):
@@ -553,11 +605,67 @@ def normalize_onboarding_config(value):
                     "label": str(item.get("label", base.get("label", clean_code)) or ""),
                     "rules": str(item.get("rules", base.get("rules", "")) or ""),
                     "enabled": bool(item.get("enabled", base.get("enabled", False))),
+<<<<<<< HEAD
                     "language_role_id": str(item.get("language_role_id", base.get("language_role_id", "")) or ""),
+=======
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
                 }
     return config
 
 
+<<<<<<< HEAD
+=======
+def enabled_onboarding_languages(config):
+    rows = []
+    for code, item in (config.get("languages") or {}).items():
+        label = str(item.get("label") or code).strip()
+        rules = str(item.get("rules") or "").strip()
+        if item.get("enabled") and label and rules:
+            rows.append((str(code), label, rules))
+    return rows[:25]
+
+
+def onboarding_panel_payload(guild_id, config):
+    languages = enabled_onboarding_languages(config)
+    if not languages:
+        raise HTTPException(status_code=400, detail="Enable at least one language with rules text")
+    options = [
+        {
+            "label": label[:100],
+            "value": code[:100],
+            "description": "Read the rules in this language"[:100],
+        }
+        for code, label, _ in languages
+    ]
+    return {
+        "content": None,
+        "embeds": [
+            {
+                "title": "Choose your rules language",
+                "description": "Select a language below. The rules will be shown privately, then Agree to unlock the server.",
+                "color": COLOR_MAP["Blurple"],
+            }
+        ],
+        "components": [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 3,
+                        "custom_id": f"onboarding_language:{guild_id}",
+                        "placeholder": "Select language",
+                        "min_values": 1,
+                        "max_values": 1,
+                        "options": options,
+                    }
+                ],
+            }
+        ],
+        "allowed_mentions": {"parse": []},
+    }
+
+
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 @app.get("/api/health")
 def health():
     return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
@@ -617,6 +725,30 @@ def roles(guild_id: str):
     return [item for item in data if item.get("name") != "@everyone" and not item.get("managed")]
 
 
+@app.get("/api/discord/guilds/{guild_id}/members/search", dependencies=[Depends(require_admin)])
+def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=25)):
+    # Search guild members for the dashboard mention picker.
+    query = urllib.parse.urlencode({"query": q.strip(), "limit": limit})
+    data = discord_request("GET", f"/guilds/{guild_id}/members/search?{query}")
+    rows = []
+    for item in data:
+        user = item.get("user") or {}
+        user_id = user.get("id")
+        if not user_id:
+            continue
+        username = user.get("global_name") or user.get("username") or user_id
+        display_name = item.get("nick") or username
+        rows.append(
+            {
+                "id": user_id,
+                "username": username,
+                "display_name": display_name,
+                "avatar": user.get("avatar"),
+            }
+        )
+    return rows
+
+
 @app.get("/api/discord/guilds/{guild_id}/emojis", dependencies=[Depends(require_admin)])
 def emojis(guild_id: str):
     return discord_request("GET", f"/guilds/{guild_id}/emojis")
@@ -632,18 +764,91 @@ def saved():
     return load_config()
 
 
+<<<<<<< HEAD
 @app.get("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
 def get_onboarding(guild_id: str):
     return normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+=======
+@app.get("/api/audit-logs", dependencies=[Depends(require_admin)])
+def audit_logs(limit: int = Query(50, ge=1, le=100)):
+    return load_config().get("audit_logs", [])[:limit]
+
+
+@app.get("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
+def get_onboarding(guild_id: str):
+    config = load_config()
+    return normalize_onboarding_config(config.get("onboarding", {}).get(str(guild_id), {}))
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 
 
 @app.put("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
 def save_onboarding(guild_id: str, payload: OnboardingPayload):
+<<<<<<< HEAD
     config = normalize_onboarding_config(model_to_dict(payload))
     upsert_onboarding(guild_id, config)
     return config
 
 
+=======
+    existing = load_config().get("onboarding", {}).get(str(guild_id), {})
+    data = model_to_dict(payload)
+    if not data.get("panel_message_id"):
+        data["panel_message_id"] = existing.get("panel_message_id", "")
+    config = normalize_onboarding_config(data)
+    upsert_onboarding(guild_id, config)
+    append_audit_log(
+        "saved",
+        "onboarding",
+        guild_id,
+        config.get("panel_message_id", ""),
+        {"channel_id": config.get("channel_id"), "enabled": config.get("enabled")},
+        request_actor(),
+    )
+    return config
+
+
+@app.post("/api/onboarding/{guild_id}/publish", dependencies=[Depends(require_admin)])
+def publish_onboarding(guild_id: str):
+    config = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+    if not config.get("enabled"):
+        raise HTTPException(status_code=400, detail="Enable onboarding before publishing")
+    channel_id = str(config.get("channel_id") or "")
+    if not channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Choose an onboarding channel")
+    if not str(config.get("member_role_id") or "").isdigit():
+        raise HTTPException(status_code=400, detail="Choose the member role to assign")
+    channel = discord_request("GET", f"/channels/{channel_id}")
+    if str(channel.get("guild_id")) != str(guild_id):
+        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+
+    payload = onboarding_panel_payload(guild_id, config)
+    panel_message_id = str(config.get("panel_message_id") or "")
+    message = None
+    if panel_message_id:
+        try:
+            message = discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            panel_message_id = ""
+    if not panel_message_id:
+        message = discord_request("POST", f"/channels/{channel_id}/messages", payload)
+        panel_message_id = message["id"]
+
+    config["panel_message_id"] = panel_message_id
+    upsert_onboarding(guild_id, config)
+    append_audit_log(
+        "published",
+        "onboarding",
+        guild_id,
+        panel_message_id,
+        {"channel_id": channel_id, "languages": [code for code, _, _ in enabled_onboarding_languages(config)]},
+        request_actor(),
+    )
+    return {"ok": True, "message_id": panel_message_id, "guild_id": guild_id, "record": config}
+
+
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 @app.post("/api/messages", dependencies=[Depends(require_admin)])
 def send_message(payload: MessagePayload):
     if not payload.channel_id.isdigit():
@@ -678,6 +883,14 @@ def send_message(payload: MessagePayload):
     body["allowed_mentions"] = {"parse": ["users", "roles"]}
     result = discord_request("POST", f"/channels/{payload.channel_id}/messages", body)
     upsert_message(guild_id, result["id"], record)
+    append_audit_log(
+        "sent",
+        "messages",
+        guild_id,
+        result["id"],
+        {"channel_id": payload.channel_id, "title": record["title"], "type": record["type"]},
+        request_actor(),
+    )
     return {"message_id": result["id"], "guild_id": guild_id, "record": record}
 
 
@@ -704,9 +917,9 @@ def create_reaction_role(payload: ReactionRolePayload):
     if payload.mode == "button":
         mappings = mappings[:1]
 
-    mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in mappings) if payload.include_role_mentions else ""
+    # Mapping data controls the role component only; visible panel text is written manually.
     footer_text = payload.description.strip()
-    description = ((footer_text + "\n\n") if footer_text and mapping_lines else footer_text) + mapping_lines
+    description = footer_text
     body = {}
     if payload.use_embed:
         embed_payload = {
@@ -755,12 +968,20 @@ def create_reaction_role(payload: ReactionRolePayload):
         "title": payload.title.strip(),
         "panel_name": payload.panel_name.strip() or first_non_empty_line(payload.description) or "Untitled role panel",
         "description": description,
-        "include_role_mentions": payload.include_role_mentions,
+        "include_role_mentions": False,
         "mode": mode,
         "kind": "reaction_role",
         "mappings": {item["emoji"]: item["role_id"] for item in mappings},
     }
     upsert_reaction_role(guild_id, message_id, record)
+    append_audit_log(
+        "posted",
+        "reaction_roles",
+        guild_id,
+        message_id,
+        {"channel_id": payload.channel_id, "panel_name": record["panel_name"], "mode": mode},
+        request_actor(),
+    )
     return {"message_id": message_id, "guild_id": guild_id, "record": record, "failed_reactions": failed_reactions}
 
 
@@ -795,6 +1016,14 @@ def edit_message(guild_id: str, message_id: str, payload: MessagePayload):
         body["embeds"] = []
     discord_request("PATCH", f"/channels/{record['channel_id']}/messages/{message_id}", body)
     upsert_message(guild_id, message_id, record)
+    append_audit_log(
+        "updated",
+        "messages",
+        guild_id,
+        message_id,
+        {"channel_id": record["channel_id"], "title": record["title"], "type": record["type"]},
+        request_actor(),
+    )
     return {"message_id": message_id, "guild_id": guild_id, "record": record}
 
 
@@ -817,9 +1046,9 @@ def edit_reaction_role(guild_id: str, message_id: str, payload: ReactionRolePayl
     if payload.mode == "button":
         mappings = mappings[:1]
 
-    mapping_lines = "\n".join(f"<@&{item['role_id']}>" for item in mappings) if payload.include_role_mentions else ""
+    # Mapping data controls the role component only; visible panel text is written manually.
     footer_text = payload.description.strip()
-    description = ((footer_text + "\n\n") if footer_text and mapping_lines else footer_text) + mapping_lines
+    description = footer_text
     mode = payload.mode if payload.mode in ("reaction", "button") else "dropdown"
     channel_id = existing.get("channel_id", payload.channel_id)
 
@@ -860,12 +1089,20 @@ def edit_reaction_role(guild_id: str, message_id: str, payload: ReactionRolePayl
         "title": payload.title.strip(),
         "panel_name": payload.panel_name.strip() or first_non_empty_line(payload.description) or "Untitled role panel",
         "description": description,
-        "include_role_mentions": payload.include_role_mentions,
+        "include_role_mentions": False,
         "mode": mode,
         "kind": "reaction_role",
         "mappings": {item["emoji"]: item["role_id"] for item in mappings},
     }
     upsert_reaction_role(guild_id, message_id, record)
+    append_audit_log(
+        "updated",
+        "reaction_roles",
+        guild_id,
+        message_id,
+        {"channel_id": channel_id, "panel_name": record["panel_name"], "mode": mode},
+        request_actor(),
+    )
     return {"message_id": message_id, "guild_id": guild_id, "record": record, "failed_reactions": failed_reactions}
 
 
@@ -875,6 +1112,7 @@ def update_saved(payload: SavedUpdatePayload):
     section = "messages" if payload.section == "messages" else "reaction_roles"
     config.setdefault(section, {}).setdefault(str(payload.guild_id), {})[str(payload.message_id)] = payload.payload
     save_config(config)
+    append_audit_log("updated_record", section, payload.guild_id, payload.message_id, {}, request_actor())
     return {"ok": True}
 
 
@@ -886,6 +1124,14 @@ def delete_saved(section: str, guild_id: str, message_id: str, delete_discord: b
     if delete_discord and item:
         discord_request("DELETE", f"/channels/{item.get('channel_id')}/messages/{message_id}")
     delete_record(table, guild_id, message_id)
+    append_audit_log(
+        "deleted" if delete_discord else "deleted_record",
+        table,
+        guild_id,
+        message_id,
+        {"channel_id": item.get("channel_id") if item else "", "deleted_discord": delete_discord},
+        request_actor(),
+    )
     return {"ok": True}
 
 

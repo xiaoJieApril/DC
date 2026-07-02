@@ -16,6 +16,10 @@ DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
     "onboarding": {},
+<<<<<<< HEAD
+=======
+    "audit_logs": [],
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
 }
 
 
@@ -37,6 +41,10 @@ def normalize_config(data):
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
+<<<<<<< HEAD
+=======
+        "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
+>>>>>>> 095f8695abf840809ea774bf2d2a37d13918ac50
     }
 
 
@@ -126,3 +134,22 @@ def delete_record(section, guild_id, message_id):
         config = _load_config_unlocked()
         config.setdefault(section, {}).setdefault(str(guild_id), {}).pop(str(message_id), None)
         _save_config_unlocked(config)
+
+
+def append_audit_log(action, section, guild_id="", message_id="", payload=None, actor="dashboard"):
+    entry = {
+        "ts": int(time.time()),
+        "actor": actor or "dashboard",
+        "action": action,
+        "section": section,
+        "guild_id": str(guild_id or ""),
+        "message_id": str(message_id or ""),
+        "payload": payload or {},
+    }
+    with config_lock():
+        config = _load_config_unlocked()
+        logs = config.setdefault("audit_logs", [])
+        logs.insert(0, entry)
+        del logs[100:]
+        _save_config_unlocked(config)
+    return entry
