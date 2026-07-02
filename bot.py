@@ -347,7 +347,32 @@ def selected_onboarding_language(values):
     return clean_values[0] if clean_values else ""
 
 
+async def onboarding_member_and_role(guild, user_id, entry):
+    # Resolve the configured fan role and the interacting member once per onboarding action.
+    role_id = str(entry.get("fan_role_id") or entry.get("member_role_id") or "")
+    if not role_id:
+        return None, None, "Onboarding is missing the fan role. Please contact an admin."
+    try:
+        role = guild.get_role(int(role_id))
+    except (TypeError, ValueError):
+        role = None
+    if not role:
+        return None, None, "The configured fan role no longer exists. Please contact an admin."
+    member = guild.get_member(user_id) or await fetch_member(guild, user_id)
+    if not member:
+        return None, None, "I could not find your server member profile. Please try again."
+    return member, role, ""
+
+
 async def send_onboarding_rules(interaction, entry, language):
+    member, role, error = await onboarding_member_and_role(interaction.guild, interaction.user.id, entry)
+    if error:
+        await interaction.followup.send(error, ephemeral=True)
+        return
+    if role in member.roles:
+        await interaction.followup.send(f"You already completed onboarding and have **{role.name}**.", ephemeral=True)
+        return
+
     item = onboarding_language(entry, language)
     if not item and language != "en":
         language = "en"
@@ -376,18 +401,9 @@ async def send_onboarding_rules(interaction, entry, language):
 
 async def apply_onboarding_agreement(interaction, entry, guild=None):
     guild = guild or interaction.guild
-    role_id = str(entry.get("fan_role_id") or entry.get("member_role_id") or "")
-    if not role_id:
-        return "Onboarding is missing the member role. Please contact an admin."
-    try:
-        role = guild.get_role(int(role_id))
-    except (TypeError, ValueError):
-        role = None
-    if not role:
-        return "The configured member role no longer exists. Please contact an admin."
-    member = guild.get_member(interaction.user.id) or await fetch_member(guild, interaction.user.id)
-    if not member:
-        return "I could not find your server member profile. Please try again."
+    member, role, error = await onboarding_member_and_role(guild, interaction.user.id, entry)
+    if error:
+        return error
     if role in member.roles:
         return f"You already completed onboarding and have **{role.name}**."
     ok, reason = bot_can_manage_role(guild, role)
