@@ -39,6 +39,16 @@ DEFAULT_ONBOARDING_LANGUAGES = {
     "en": {"label": "English", "rules": "Please read the rules and click Agree to receive the fan role.", "enabled": True, "language_role_id": ""},
     "ja": {"label": "日本語", "rules": "ルールを読んで Agree を押すと fan role を受け取れます。", "enabled": True, "language_role_id": ""},
 }
+DEFAULT_ONBOARDING_TEXT = {
+    "panel_title": "Choose your rules language",
+    "panel_description": "Select one language for private rules. If you select multiple languages, English rules will be shown.",
+    "panel_placeholder": "Select language",
+    "panel_color": "Blurple",
+    "rules_title": "{label} Rules",
+    "rules_color": "Blurple",
+    "rules_footer": "",
+    "agree_label": "Agree",
+}
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 BOT_LOG_PATH = LOG_DIR / "dashboard_bot.log"
@@ -125,6 +135,14 @@ class OnboardingPayload(BaseModel):
     channel_id: str = ""
     member_role_id: str = ""
     panel_message_id: str = ""
+    panel_title: str = DEFAULT_ONBOARDING_TEXT["panel_title"]
+    panel_description: str = DEFAULT_ONBOARDING_TEXT["panel_description"]
+    panel_placeholder: str = DEFAULT_ONBOARDING_TEXT["panel_placeholder"]
+    panel_color: str = DEFAULT_ONBOARDING_TEXT["panel_color"]
+    rules_title: str = DEFAULT_ONBOARDING_TEXT["rules_title"]
+    rules_color: str = DEFAULT_ONBOARDING_TEXT["rules_color"]
+    rules_footer: str = ""
+    agree_label: str = DEFAULT_ONBOARDING_TEXT["agree_label"]
     languages: dict[str, OnboardingLanguagePayload] = Field(default_factory=dict)
 
 
@@ -539,6 +557,7 @@ def default_onboarding_config():
         "channel_id": "",
         "member_role_id": "",
         "panel_message_id": "",
+        **DEFAULT_ONBOARDING_TEXT,
         "languages": {code: dict(value) for code, value in DEFAULT_ONBOARDING_LANGUAGES.items()},
     }
 
@@ -553,6 +572,12 @@ def normalize_onboarding_config(value):
     config["channel_id"] = str(value.get("channel_id", config["channel_id"]) or "")
     config["member_role_id"] = str(value.get("member_role_id") or value.get("fan_role_id") or "")
     config["panel_message_id"] = str(value.get("panel_message_id", config["panel_message_id"]) or "")
+    for key, fallback in DEFAULT_ONBOARDING_TEXT.items():
+        config[key] = str(value.get(key, fallback) or fallback)
+    if config["panel_color"] not in COLOR_MAP:
+        config["panel_color"] = DEFAULT_ONBOARDING_TEXT["panel_color"]
+    if config["rules_color"] not in COLOR_MAP:
+        config["rules_color"] = DEFAULT_ONBOARDING_TEXT["rules_color"]
     languages = value.get("languages", {})
     if isinstance(languages, dict):
         for code, item in languages.items():
@@ -599,9 +624,9 @@ def onboarding_panel_payload(guild_id, config):
         "content": None,
         "embeds": [
             {
-                "title": "Choose your rules language",
-                "description": "Select one language for private rules. If you select multiple languages, English rules will be shown.",
-                "color": COLOR_MAP["Blurple"],
+                "title": str(config.get("panel_title") or DEFAULT_ONBOARDING_TEXT["panel_title"])[:256],
+                "description": str(config.get("panel_description") or DEFAULT_ONBOARDING_TEXT["panel_description"])[:4096],
+                "color": COLOR_MAP.get(config.get("panel_color"), COLOR_MAP["Blurple"]),
             }
         ],
         "components": [
@@ -611,7 +636,7 @@ def onboarding_panel_payload(guild_id, config):
                     {
                         "type": 3,
                         "custom_id": f"onboarding_language:{guild_id}",
-                        "placeholder": "Select language",
+                        "placeholder": str(config.get("panel_placeholder") or DEFAULT_ONBOARDING_TEXT["panel_placeholder"])[:150],
                         "min_values": 1,
                         "max_values": min(len(options), 25),
                         "options": options,

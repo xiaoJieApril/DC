@@ -90,7 +90,8 @@ function fillSelectMessage(select, message) {
 }
 
 function fillColors() {
-  ["msgColor", "rrColor"].forEach((id) => {
+  ["msgColor", "rrColor", "obPanelColor", "obRulesColor"].forEach((id) => {
+    if (!$(id)) return;
     fillSelect($(id), colors, (item) => item, (item) => item);
   });
 }
@@ -368,6 +369,14 @@ function applyOnboardingForm(config) {
   state.onboarding = config;
   $("obEnabled").checked = !!config.enabled;
   $("obFanRole").value = config.fan_role_id || config.member_role_id || "";
+  $("obPanelTitle").value = config.panel_title || "Choose your rules language";
+  $("obPanelDescription").value = config.panel_description || "";
+  $("obPanelPlaceholder").value = config.panel_placeholder || "Select language";
+  $("obPanelColor").value = config.panel_color || "Blurple";
+  $("obRulesTitle").value = config.rules_title || "{label} Rules";
+  $("obRulesColor").value = config.rules_color || "Blurple";
+  $("obRulesFooter").value = config.rules_footer || "";
+  $("obAgreeLabel").value = config.agree_label || "Agree";
   if ([...$("obChannel").options].some((option) => option.value === config.channel_id)) {
     $("obChannel").value = config.channel_id;
   }
@@ -398,6 +407,14 @@ function collectOnboardingForm() {
     fan_role_id: $("obFanRole").value,
     member_role_id: $("obFanRole").value,
     panel_message_id: state.onboarding?.panel_message_id || "",
+    panel_title: $("obPanelTitle").value,
+    panel_description: $("obPanelDescription").value,
+    panel_placeholder: $("obPanelPlaceholder").value,
+    panel_color: $("obPanelColor").value,
+    rules_title: $("obRulesTitle").value,
+    rules_color: $("obRulesColor").value,
+    rules_footer: $("obRulesFooter").value,
+    agree_label: $("obAgreeLabel").value,
     languages,
   };
 }

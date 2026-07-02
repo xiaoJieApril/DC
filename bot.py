@@ -15,6 +15,13 @@ COLOR_MAP = {
     "yellow": 0xFEE75C,
     "white": 0xFFFFFF,
 }
+DISPLAY_COLOR_MAP = {
+    "Blurple": 0x5865F2,
+    "Green": 0x57F287,
+    "Red": 0xED4245,
+    "Yellow": 0xFEE75C,
+    "White": 0xFFFFFF,
+}
 
 
 def get_rr_entry(config, guild_id, message_id):
@@ -277,11 +284,11 @@ class RoleSelectView(discord.ui.View):
 
 
 class OnboardingAgreeView(discord.ui.View):
-    def __init__(self, guild_id, language):
+    def __init__(self, guild_id, language, label="Agree"):
         super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(
-                label="Agree",
+                label=str(label or "Agree")[:80],
                 style=discord.ButtonStyle.success,
                 custom_id=f"onboarding_agree:{guild_id}:{language}",
             )
@@ -350,9 +357,19 @@ async def send_onboarding_rules(interaction, entry, language):
         return
     label = item.get("label") or language
     rules = str(item.get("rules") or "").strip()
+    title_template = str(entry.get("rules_title") or "{label} Rules")
+    title = title_template.replace("{label}", str(label)).replace("{language}", str(label))[:256]
+    embed = discord.Embed(
+        title=title or f"{label} Rules",
+        description=rules[:4096],
+        color=DISPLAY_COLOR_MAP.get(entry.get("rules_color"), DISPLAY_COLOR_MAP["Blurple"]),
+    )
+    footer = str(entry.get("rules_footer") or "").strip()
+    if footer:
+        embed.set_footer(text=footer[:2048])
     await interaction.followup.send(
-        content=f"**{label} Rules**\n\n{rules}",
-        view=OnboardingAgreeView(interaction.guild.id, language),
+        embed=embed,
+        view=OnboardingAgreeView(interaction.guild.id, language, entry.get("agree_label") or "Agree"),
         ephemeral=True,
     )
 
