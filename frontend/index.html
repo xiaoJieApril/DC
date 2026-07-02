@@ -179,35 +179,34 @@
           </div>
         </section>
 
-        <!-- New Member Rules: map language roles to rules and grant the fan role after agreement. -->
+        <!-- New Member Rules: publish a public language selector and reply with private rules. -->
         <section id="onboarding" class="view hidden">
           <div class="panel">
             <h2>New Member Rules</h2>
-            <div class="grid two">
+            <div class="grid three">
               <label>Server<select id="obGuild"></select></label>
+              <label>Rules Channel<select id="obChannel"></select></label>
               <label>Fan Role<select id="obFanRole"></select></label>
             </div>
-            <label class="check"><input id="obEnabled" type="checkbox" /> Enable language-role rules gate</label>
+            <label class="check"><input id="obEnabled" type="checkbox" /> Enable private rules gate</label>
             <div class="language-grid">
               <article class="language-card">
                 <label class="check"><input id="obLangEnabledZh" type="checkbox" /> Chinese</label>
-                <label>Chinese Role<select id="obLangRoleZh"></select></label>
                 <label>Rules<textarea id="obLangRulesZh" rows="5"></textarea></label>
               </article>
               <article class="language-card">
                 <label class="check"><input id="obLangEnabledEn" type="checkbox" /> English</label>
-                <label>English Role<select id="obLangRoleEn"></select></label>
                 <label>Rules<textarea id="obLangRulesEn" rows="5"></textarea></label>
               </article>
               <article class="language-card">
                 <label class="check"><input id="obLangEnabledJa" type="checkbox" /> Japanese</label>
-                <label>Japanese Role<select id="obLangRoleJa"></select></label>
                 <label>Rules<textarea id="obLangRulesJa" rows="5"></textarea></label>
               </article>
             </div>
-            <p id="obInfo" class="muted">Members without fan role will receive rules when they have one of the language roles.</p>
+            <p id="obInfo" class="muted">Publish a selector in the rules channel. Multiple selected languages will show English rules.</p>
             <div class="actions">
               <button id="saveOnboardingBtn">Save New Member Rules</button>
+              <button id="publishOnboardingBtn" class="secondary">Publish Language Panel</button>
             </div>
           </div>
         </section>

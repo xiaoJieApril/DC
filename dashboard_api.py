@@ -572,6 +572,57 @@ def normalize_onboarding_config(value):
     return config
 
 
+def enabled_onboarding_languages(config):
+    rows = []
+    for code, item in (config.get("languages") or {}).items():
+        label = str(item.get("label") or code).strip()
+        rules = str(item.get("rules") or "").strip()
+        if item.get("enabled") and label and rules:
+            rows.append((str(code), label, rules))
+    return rows[:25]
+
+
+def onboarding_panel_payload(guild_id, config):
+    # Publish one public selector; Discord sends the rules privately after interaction.
+    languages = enabled_onboarding_languages(config)
+    if not languages:
+        raise HTTPException(status_code=400, detail="Enable at least one language with rules text")
+    options = [
+        {
+            "label": label[:100],
+            "value": code[:100],
+            "description": "Select multiple to receive English rules"[:100],
+        }
+        for code, label, _ in languages
+    ]
+    return {
+        "content": None,
+        "embeds": [
+            {
+                "title": "Choose your rules language",
+                "description": "Select one language for private rules. If you select multiple languages, English rules will be shown.",
+                "color": COLOR_MAP["Blurple"],
+            }
+        ],
+        "components": [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 3,
+                        "custom_id": f"onboarding_language:{guild_id}",
+                        "placeholder": "Select language",
+                        "min_values": 1,
+                        "max_values": min(len(options), 25),
+                        "options": options,
+                    }
+                ],
+            }
+        ],
+        "allowed_mentions": {"parse": []},
+    }
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
@@ -700,6 +751,46 @@ def save_onboarding(guild_id: str, payload: OnboardingPayload):
         request_actor(),
     )
     return config
+
+
+@app.post("/api/onboarding/{guild_id}/publish", dependencies=[Depends(require_admin)])
+def publish_onboarding(guild_id: str):
+    config = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+    if not config.get("enabled"):
+        raise HTTPException(status_code=400, detail="Enable onboarding before publishing")
+    channel_id = str(config.get("channel_id") or "")
+    if not channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Choose a rules channel")
+    if not str(config.get("fan_role_id") or config.get("member_role_id") or "").isdigit():
+        raise HTTPException(status_code=400, detail="Choose the fan role to assign")
+    channel = discord_request("GET", f"/channels/{channel_id}")
+    if str(channel.get("guild_id")) != str(guild_id):
+        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+
+    payload = onboarding_panel_payload(guild_id, config)
+    panel_message_id = str(config.get("panel_message_id") or "")
+    if panel_message_id:
+        try:
+            discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            panel_message_id = ""
+    if not panel_message_id:
+        message = discord_request("POST", f"/channels/{channel_id}/messages", payload)
+        panel_message_id = message["id"]
+
+    config["panel_message_id"] = panel_message_id
+    upsert_onboarding(guild_id, config)
+    append_audit_log(
+        "published",
+        "onboarding",
+        guild_id,
+        panel_message_id,
+        {"channel_id": channel_id, "languages": [code for code, _, _ in enabled_onboarding_languages(config)]},
+        request_actor(),
+    )
+    return {"ok": True, "message_id": panel_message_id, "guild_id": guild_id, "record": config}
 
 
 @app.post("/api/messages", dependencies=[Depends(require_admin)])

@@ -105,7 +105,7 @@ function setView(name) {
     overview: ["Overview", "Manage your Discord bot from the web."],
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
-    onboarding: ["New Member Rules", "Language-role rules gate for fan role."],
+    onboarding: ["New Member Rules", "Private rules gate with language selection."],
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
   };
@@ -337,14 +337,13 @@ async function loadOnboardingRoles() {
     state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
   }
   const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
-  ["obFanRole", "obLangRoleZh", "obLangRoleEn", "obLangRoleJa"].forEach((id) => {
-    fillSelect($(id), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
-  });
+  fillSelect($("obFanRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
 }
 
 async function loadOnboardingControls() {
   $("obInfo").textContent = "Loading New Member Rules selectors...";
   try {
+    await loadChannels("ob");
     await loadOnboardingRoles();
     await loadOnboarding();
   } catch (err) {
@@ -354,28 +353,33 @@ async function loadOnboardingControls() {
 
 async function refreshOnboardingControls() {
   $("obInfo").textContent = "Loading New Member Rules selectors...";
+  await loadChannels("ob");
   await loadOnboardingRoles();
   await loadOnboarding();
 }
 
 const onboardingLanguageIds = {
-  zh: { enabled: "obLangEnabledZh", role: "obLangRoleZh", rules: "obLangRulesZh", label: "中文" },
-  en: { enabled: "obLangEnabledEn", role: "obLangRoleEn", rules: "obLangRulesEn", label: "English" },
-  ja: { enabled: "obLangEnabledJa", role: "obLangRoleJa", rules: "obLangRulesJa", label: "日本語" },
+  zh: { enabled: "obLangEnabledZh", rules: "obLangRulesZh", label: "中文" },
+  en: { enabled: "obLangEnabledEn", rules: "obLangRulesEn", label: "English" },
+  ja: { enabled: "obLangEnabledJa", rules: "obLangRulesJa", label: "日本語" },
 };
 
 function applyOnboardingForm(config) {
   state.onboarding = config;
   $("obEnabled").checked = !!config.enabled;
   $("obFanRole").value = config.fan_role_id || config.member_role_id || "";
-  // Each enabled language links a language role to the rules DM sent by the bot.
+  if ([...$("obChannel").options].some((option) => option.value === config.channel_id)) {
+    $("obChannel").value = config.channel_id;
+  }
+  // Each enabled language becomes an option in the public selector panel.
   Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
     const item = config.languages?.[code] || {};
     $(ids.enabled).checked = !!item.enabled;
-    $(ids.role).value = item.language_role_id || "";
     $(ids.rules).value = item.rules || "";
   });
-  $("obInfo").textContent = "Members without fan role will receive rules when they have one of the language roles.";
+  $("obInfo").textContent = config.panel_message_id
+    ? `Language panel message: ${config.panel_message_id}`
+    : "Publish a selector in the rules channel. Multiple selected languages will show English rules.";
 }
 
 function collectOnboardingForm() {
@@ -384,12 +388,13 @@ function collectOnboardingForm() {
     languages[code] = {
       label: ids.label,
       enabled: $(ids.enabled).checked,
-      language_role_id: $(ids.role).value,
+      language_role_id: "",
       rules: $(ids.rules).value,
     };
   });
   return {
     enabled: $("obEnabled").checked,
+    channel_id: $("obChannel").value,
     fan_role_id: $("obFanRole").value,
     member_role_id: $("obFanRole").value,
     panel_message_id: state.onboarding?.panel_message_id || "",
@@ -412,6 +417,15 @@ async function saveOnboarding() {
   });
   applyOnboardingForm(config);
   toast("New member rules saved.");
+  await loadAuditLogs();
+}
+
+async function publishOnboarding() {
+  await saveOnboarding();
+  const guildId = $("obGuild").value;
+  const result = await api(`/api/onboarding/${guildId}/publish`, { method: "POST" });
+  applyOnboardingForm(result.record);
+  toast(`Language panel published: ${result.message_id}`);
   await loadAuditLogs();
 }
 
@@ -1001,6 +1015,7 @@ function wireEvents() {
     await runAction("Load onboarding server", refreshOnboardingControls);
   });
   $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
+  $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {
