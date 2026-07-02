@@ -16,10 +16,10 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from storage import delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_reaction_role
+from storage import delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
 
 
 load_dotenv()
@@ -34,6 +34,11 @@ COLOR_MAP = {
     "White": 0xFFFFFF,
 }
 DEFAULT_RR_DESCRIPTION = "使用下拉式選單來更改名字顏色"
+DEFAULT_ONBOARDING_LANGUAGES = {
+    "zh": {"label": "中文", "rules": "請閱讀規則並點擊 Agree 取得 fan role。", "enabled": True, "language_role_id": ""},
+    "en": {"label": "English", "rules": "Please read the rules and click Agree to receive the fan role.", "enabled": True, "language_role_id": ""},
+    "ja": {"label": "日本語", "rules": "ルールを読んで Agree を押すと fan role を受け取れます。", "enabled": True, "language_role_id": ""},
+}
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 BOT_LOG_PATH = LOG_DIR / "dashboard_bot.log"
@@ -105,6 +110,19 @@ class ReactionRolePayload(BaseModel):
     include_role_mentions: bool = True
     color: str = "Blurple"
     mappings: list[MappingPayload]
+
+
+class OnboardingLanguagePayload(BaseModel):
+    label: str = ""
+    rules: str = ""
+    enabled: bool = True
+    language_role_id: str = ""
+
+
+class OnboardingPayload(BaseModel):
+    enabled: bool = False
+    fan_role_id: str = ""
+    languages: dict[str, OnboardingLanguagePayload] = Field(default_factory=dict)
 
 
 class SavedUpdatePayload(BaseModel):
@@ -499,6 +517,47 @@ def role_button_components(message_id, mappings):
     return [{"type": 1, "components": [button]}]
 
 
+def model_to_dict(value):
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return dict(value)
+
+
+def default_onboarding_config():
+    return {
+        "enabled": False,
+        "fan_role_id": "",
+        "languages": {code: dict(item) for code, item in DEFAULT_ONBOARDING_LANGUAGES.items()},
+    }
+
+
+def normalize_onboarding_config(value):
+    config = default_onboarding_config()
+    if not isinstance(value, dict):
+        return config
+    config["enabled"] = bool(value.get("enabled", config["enabled"]))
+    config["fan_role_id"] = str(value.get("fan_role_id") or value.get("member_role_id") or "")
+    languages = value.get("languages", {})
+    if isinstance(languages, dict):
+        for code, item in languages.items():
+            clean_code = str(code).strip().lower()
+            if not clean_code:
+                continue
+            base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False, "language_role_id": ""})
+            if isinstance(item, BaseModel):
+                item = model_to_dict(item)
+            if isinstance(item, dict):
+                config["languages"][clean_code] = {
+                    "label": str(item.get("label", base.get("label", clean_code)) or ""),
+                    "rules": str(item.get("rules", base.get("rules", "")) or ""),
+                    "enabled": bool(item.get("enabled", base.get("enabled", False))),
+                    "language_role_id": str(item.get("language_role_id", base.get("language_role_id", "")) or ""),
+                }
+    return config
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
@@ -571,6 +630,18 @@ def resolve_emoji(guild_id: str, value: str = Query(..., min_length=1)):
 @app.get("/api/saved", dependencies=[Depends(require_admin)])
 def saved():
     return load_config()
+
+
+@app.get("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
+def get_onboarding(guild_id: str):
+    return normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+
+
+@app.put("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
+def save_onboarding(guild_id: str, payload: OnboardingPayload):
+    config = normalize_onboarding_config(model_to_dict(payload))
+    upsert_onboarding(guild_id, config)
+    return config
 
 
 @app.post("/api/messages", dependencies=[Depends(require_admin)])

@@ -10,6 +10,7 @@ const state = {
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
+  onboarding: null,
 };
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
@@ -83,6 +84,7 @@ function setView(name) {
     overview: ["Overview", "Manage your Discord bot from the web."],
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
+    onboarding: ["New Member Rules", "Language-role rules gate for fan role."],
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
   };
@@ -207,8 +209,9 @@ async function loadGuilds() {
   state.guilds = await api("/api/discord/guilds");
   fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
+  fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
-    await Promise.all([loadChannels("msg"), loadChannels("rr"), loadRoles(), loadEmojis()]);
+    await Promise.allSettled([loadChannels("msg"), loadChannels("rr"), loadRoles(), loadEmojis(), loadOnboardingRoles(), loadOnboarding()]);
   }
 }
 
@@ -235,6 +238,65 @@ async function loadRoles() {
     (r) => `${r.name} (${r.id})`,
     (r) => r.id,
   );
+}
+
+async function loadOnboardingRoles() {
+  const guildId = $("obGuild").value;
+  if (!guildId) return;
+  state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
+  state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
+  const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
+  ["obFanRole", "obLangRoleZh", "obLangRoleEn", "obLangRoleJa"].forEach((id) => {
+    fillSelect($(id), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+  });
+}
+
+const onboardingLanguageIds = {
+  zh: { enabled: "obLangEnabledZh", role: "obLangRoleZh", rules: "obLangRulesZh", label: "中文" },
+  en: { enabled: "obLangEnabledEn", role: "obLangRoleEn", rules: "obLangRulesEn", label: "English" },
+  ja: { enabled: "obLangEnabledJa", role: "obLangRoleJa", rules: "obLangRulesJa", label: "日本語" },
+};
+
+async function loadOnboarding() {
+  const guildId = $("obGuild").value;
+  if (!guildId) return;
+  const config = await api(`/api/onboarding/${guildId}`);
+  state.onboarding = config;
+  $("obEnabled").checked = !!config.enabled;
+  $("obFanRole").value = config.fan_role_id || "";
+  Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
+    const item = config.languages?.[code] || {};
+    $(ids.enabled).checked = !!item.enabled;
+    $(ids.role).value = item.language_role_id || "";
+    $(ids.rules).value = item.rules || "";
+  });
+}
+
+function collectOnboarding() {
+  const languages = {};
+  Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
+    languages[code] = {
+      label: ids.label,
+      enabled: $(ids.enabled).checked,
+      language_role_id: $(ids.role).value,
+      rules: $(ids.rules).value,
+    };
+  });
+  return {
+    enabled: $("obEnabled").checked,
+    fan_role_id: $("obFanRole").value,
+    languages,
+  };
+}
+
+async function saveOnboarding() {
+  const guildId = $("obGuild").value;
+  const config = await api(`/api/onboarding/${guildId}`, {
+    method: "PUT",
+    body: JSON.stringify(collectOnboarding()),
+  });
+  state.onboarding = config;
+  toast("New member rules saved.");
 }
 
 async function loadEmojis() {
@@ -484,6 +546,10 @@ function wireEvents() {
   $("rrGuild").addEventListener("change", async () => {
     await Promise.all([loadChannels("rr"), loadRoles(), loadEmojis()]);
   });
+  $("obGuild").addEventListener("change", async () => {
+    await Promise.all([loadOnboardingRoles(), loadOnboarding()]);
+  });
+  $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {

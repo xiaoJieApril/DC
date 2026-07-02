@@ -15,6 +15,7 @@ LOCK_FILE = BASE_DIR / "config.json.lock"
 DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
+    "onboarding": {},
 }
 
 
@@ -35,6 +36,7 @@ def normalize_config(data):
     return {
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
+        "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
     }
 
 
@@ -108,6 +110,13 @@ def upsert_reaction_role(guild_id, message_id, payload):
     with config_lock():
         config = _load_config_unlocked()
         config.setdefault("reaction_roles", {}).setdefault(str(guild_id), {})[str(message_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def upsert_onboarding(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("onboarding", {})[str(guild_id)] = dict(payload)
         _save_config_unlocked(config)
 
 
