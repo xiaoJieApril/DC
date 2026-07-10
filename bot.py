@@ -1,9 +1,11 @@
 import os
+import time
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from storage import init_db, load_config, save_config, upsert_message
+from storage import append_moderation_case, init_db, load_config, save_config, update_moderation_case, upsert_message
 
 load_dotenv()
 init_db()
@@ -207,6 +209,67 @@ def first_non_empty_line(value):
         if clean:
             return clean
     return ""
+
+
+def next_case_id(config, guild_id):
+    cases = config.get("moderation_cases", {}).get(str(guild_id), [])
+    max_seen = 0
+    for item in cases:
+        raw = str(item.get("case_id", "")).removeprefix("CASE-")
+        if raw.isdigit():
+            max_seen = max(max_seen, int(raw))
+    return f"CASE-{max_seen + 1:04d}"
+
+
+def create_moderation_case(ctx, member, action, reason, rule_number="", severity="normal", evidence_url="", notes="", status="open"):
+    config = load_config()
+    case = {
+        "case_id": next_case_id(config, ctx.guild.id),
+        "guild_id": str(ctx.guild.id),
+        "target_user_id": str(member.id),
+        "target_display": member.display_name,
+        "rule_number": str(rule_number or ""),
+        "violation_type": str(action or ""),
+        "severity": severity if severity in ("normal", "serious", "red_line") else "normal",
+        "action": action,
+        "reason": str(reason or "").strip(),
+        "evidence_url": str(evidence_url or "").strip(),
+        "notes": str(notes or "").strip(),
+        "status": status,
+        "actor": str(ctx.author),
+        "ts": int(time.time()),
+    }
+    append_moderation_case(ctx.guild.id, case)
+    return case
+
+
+async def send_moderation_case_log(ctx, case):
+    settings = load_config().get("moderation_settings", {}).get(str(ctx.guild.id), {})
+    channel_id = str(settings.get("log_channel_id") or "")
+    channel = ctx.guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    if not channel:
+        return
+    embed = discord.Embed(
+        title=f"Moderation {case.get('case_id')}",
+        description=(
+            f"Target: <@{case.get('target_user_id')}>\n"
+            f"Action: {case.get('action')}\n"
+            f"Rule: {case.get('rule_number') or 'unspecified'}\n"
+            f"Severity: {case.get('severity')}\n"
+            f"Status: {case.get('status')}\n\n"
+            f"{case.get('reason')}"
+        )[:4096],
+        color=DISPLAY_COLOR_MAP["Red"] if case.get("severity") == "red_line" else DISPLAY_COLOR_MAP["Yellow"],
+    )
+    if case.get("evidence_url"):
+        embed.add_field(name="Evidence", value=case["evidence_url"][:1024], inline=False)
+    if case.get("notes"):
+        embed.add_field(name="Notes", value=case["notes"][:1024], inline=False)
+    embed.set_footer(text=f"Actor: {case.get('actor')}")
+    try:
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException as exc:
+        print(f"[MOD] Could not send moderation log: {exc}")
 
 
 ALLOWED_MENTIONS = discord.AllowedMentions(users=True, roles=True, everyone=False)
@@ -654,6 +717,88 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
         return
     await member.remove_roles(role, reason=f"Removed by {ctx.author}")
     await ctx.respond(f"Removed **{role.name}** from {member.mention}.", ephemeral=True)
+
+
+@bot.slash_command(name="warn", description="Create a moderation warning case")
+@commands.has_permissions(manage_messages=True)
+async def warn(ctx, member: discord.Member, reason: str, rule_number: str = "", evidence_url: str = ""):
+    if not reason.strip():
+        await ctx.respond("Reason is required.", ephemeral=True)
+        return
+    case = create_moderation_case(ctx, member, "warning", reason, rule_number, "normal", evidence_url)
+    await send_moderation_case_log(ctx, case)
+    await ctx.respond(f"Created warning case **{case['case_id']}** for {member.mention}.", ephemeral=True)
+
+
+@bot.slash_command(name="probation", description="Give a probation role and create a moderation case")
+@commands.has_permissions(manage_roles=True)
+async def probation(ctx, member: discord.Member, role: discord.Role, reason: str, rule_number: str = "", evidence_url: str = ""):
+    ok, role_reason = bot_can_manage_role(ctx.guild, role)
+    if not ok:
+        await ctx.respond(role_reason, ephemeral=True)
+        return
+    await member.add_roles(role, reason=f"Probation by {ctx.author}: {reason}")
+    case = create_moderation_case(ctx, member, "probation", reason, rule_number, "serious", evidence_url, f"Probation role: {role.name}")
+    await send_moderation_case_log(ctx, case)
+    await ctx.respond(f"Created probation case **{case['case_id']}** and gave **{role.name}** to {member.mention}.", ephemeral=True)
+
+
+@bot.slash_command(name="timeout", description="Timeout a member and create a moderation case")
+@commands.has_permissions(moderate_members=True)
+async def timeout_member(ctx, member: discord.Member, minutes: int, reason: str, rule_number: str = "", evidence_url: str = ""):
+    if minutes <= 0:
+        await ctx.respond("Minutes must be greater than 0.", ephemeral=True)
+        return
+    until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    try:
+        if hasattr(member, "timeout_for"):
+            await member.timeout_for(timedelta(minutes=minutes), reason=f"Timeout by {ctx.author}: {reason}")
+        else:
+            await member.edit(timed_out_until=until, reason=f"Timeout by {ctx.author}: {reason}")
+    except discord.Forbidden:
+        await ctx.respond("I do not have permission to timeout that member.", ephemeral=True)
+        return
+    except discord.HTTPException as exc:
+        await ctx.respond(f"Could not timeout that member: {exc}", ephemeral=True)
+        return
+    case = create_moderation_case(ctx, member, "timeout", reason, rule_number, "serious", evidence_url, f"Timeout minutes: {minutes}")
+    await send_moderation_case_log(ctx, case)
+    await ctx.respond(f"Created timeout case **{case['case_id']}** for {member.mention}.", ephemeral=True)
+
+
+@bot.slash_command(name="case", description="Look up a moderation case")
+@commands.has_permissions(manage_messages=True)
+async def case_lookup(ctx, case_id: str):
+    cases = load_config().get("moderation_cases", {}).get(str(ctx.guild.id), [])
+    case = next((item for item in cases if str(item.get("case_id")).lower() == case_id.lower()), None)
+    if not case:
+        await ctx.respond("Moderation case not found.", ephemeral=True)
+        return
+    lines = [
+        f"**{case.get('case_id')}** · {case.get('status')}",
+        f"Target: <@{case.get('target_user_id')}>",
+        f"Action: {case.get('action')}",
+        f"Rule: {case.get('rule_number') or 'unspecified'}",
+        f"Reason: {case.get('reason')}",
+    ]
+    if case.get("evidence_url"):
+        lines.append(f"Evidence: {case.get('evidence_url')}")
+    await ctx.respond("\n".join(lines), ephemeral=True)
+
+
+@bot.slash_command(name="resolvecase", description="Update a moderation case appeal/status")
+@commands.has_permissions(manage_messages=True)
+async def resolve_case(ctx, case_id: str, status: str = "resolved", notes: str = ""):
+    clean_status = status if status in ("open", "accepted", "rejected", "escalated", "resolved") else "resolved"
+    updated = update_moderation_case(
+        ctx.guild.id,
+        case_id,
+        {"status": clean_status, "resolution_notes": notes, "resolved_ts": int(time.time()), "resolved_by": str(ctx.author)},
+    )
+    if not updated:
+        await ctx.respond("Moderation case not found.", ephemeral=True)
+        return
+    await ctx.respond(f"Updated **{case_id}** to **{clean_status}**.", ephemeral=True)
 
 
 @reactionrole.command(name="create", description="Create a reaction role message")

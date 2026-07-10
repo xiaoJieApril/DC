@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
     "onboarding": {},
+    "moderation_cases": {},
+    "moderation_settings": {},
     "audit_logs": [],
 }
 
@@ -39,6 +41,8 @@ def normalize_config(data):
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
+        "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
+        "moderation_settings": data.get("moderation_settings", {}) if isinstance(data.get("moderation_settings", {}), dict) else {},
         "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
     }
 
@@ -121,6 +125,35 @@ def upsert_onboarding(guild_id, payload):
         config = _load_config_unlocked()
         config.setdefault("onboarding", {})[str(guild_id)] = dict(payload)
         _save_config_unlocked(config)
+
+
+def set_moderation_settings(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("moderation_settings", {})[str(guild_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def append_moderation_case(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_cases = config.setdefault("moderation_cases", {}).setdefault(str(guild_id), [])
+        guild_cases.insert(0, dict(payload))
+        del guild_cases[250:]
+        _save_config_unlocked(config)
+    return payload
+
+
+def update_moderation_case(guild_id, case_id, updates):
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_cases = config.setdefault("moderation_cases", {}).setdefault(str(guild_id), [])
+        for item in guild_cases:
+            if str(item.get("case_id")) == str(case_id):
+                item.update(dict(updates))
+                _save_config_unlocked(config)
+                return item
+    return None
 
 
 def delete_record(section, guild_id, message_id):

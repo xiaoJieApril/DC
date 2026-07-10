@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -19,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from storage import append_audit_log, delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
+from storage import append_audit_log, append_moderation_case, delete_record, init_db, load_config, save_config, set_moderation_settings, storage_name, update_moderation_case, upsert_message, upsert_onboarding, upsert_reaction_role
 
 
 load_dotenv()
@@ -48,6 +49,144 @@ DEFAULT_ONBOARDING_TEXT = {
     "rules_color": "Blurple",
     "rules_footer": "",
     "agree_label": "Agree",
+}
+SERVER_RULES_ONBOARDING_TEXT = {
+    "panel_title": "📜 Server Guidelines",
+    "panel_description": "Please choose your language to read the server rules privately. If you select multiple languages, English rules will be shown.",
+    "panel_placeholder": "Choose your language",
+    "panel_color": "Blurple",
+    "rules_title": "{label} Server Guidelines",
+    "rules_color": "Blurple",
+    "rules_footer": "Respect others. Respect creators. Respect privacy.",
+    "agree_label": "✅ Agree and Unlock",
+}
+SERVER_RULES_LANGUAGES = {
+    "zh": {
+        "label": "中文",
+        "enabled": True,
+        "language_role_id": "",
+        "rules": """## 📜 伺服器守則｜Server Guidelines｜サーバールール
+
+### 1️⃣ 尊重彼此｜Mutual Respect｜相互尊重
+本伺服器嚴禁任何形式的人身攻擊、歧視、騷擾、霸凌、惡意抹黑及仇恨言論。若意見產生分歧時，請理性，針對議題進行討論，對事不對人。
+
+### 2️⃣ 維護氛圍｜Maintain a Healthy Atmosphere｜雰囲気の維持
+本伺服器嚴禁引戰、釣魚、帶風向、煽動粉絲對立等行為。成員間私人糾紛請私下協調，或尋求管理團隊介入。請盡量避免討論政治或宗教相關話題，以免引發不必要的爭執。本站支援中、英、日三語交流，請尊重非母語使用者。
+
+### 3️⃣ 全年齡規範｜All-Age Standard｜全年齢対象
+本伺服器為全年齡向空間，嚴禁任何色情、裸露、性暗示、R18／NSFW 內容及相關連結。Discord 服務條款所禁止之內容亦同。
+
+### 4️⃣ 資訊查證｜Verify Information｜情報の検証
+嚴禁散布謠言、未經證實之消息、惡意揣測及誤導性資訊。如涉及 VTuber 畢業、轉生等敏感議題時，請附上可信來源。
+
+### 5️⃣ 尊重智慧財產｜Respect Intellectual Property｜知的財産の尊重
+嚴禁盜用圖片、未經授權轉載他人作品，以及外流會員限定或付費內容等。轉貼時請附上原作者來源，使用前應取得其授權。
+
+### 6️⃣ 隱私絕對保護｜Absolute Privacy Protection｜プライバシーの絶対的保護
+隱私是本伺服器最核心的紅線。嚴禁公開、索取或散布任何成員的真實姓名、地址、電話、學校、工作場所、社群帳號等個人資訊。公共頻道嚴禁以明示、暗示、縮寫、謎語或引導查詢等方式討論 VTuber 中之人或前世身份。如欲討論轉生相關話題，請至 `#roles` 領取「👻 深度旅人」身分組後，於專屬頻道進行。
+
+允許討論 VTuber 的過去經歷與當前活動，但嚴禁在公共頻道中連結、暗示或揭示「過去身份」與「當前身份」為同一人。此類行為視同違反隱私紅線，將逕行處分。
+
+### 7️⃣ 禁止洗版與廣告｜No Spam or Advertising｜スパム・広告の禁止
+嚴禁洗版、惡意刷屏、大量重複訊息、表情符號氾濫、機器人濫用及惡意標記。未經管理團隊許可，不得宣傳其他伺服器、社群、商業內容或招募資訊。
+
+### 8️⃣ 管理與申訴｜Management and Appeals｜運営と異議申し立て
+遇違規行為請在 `#TICKET｜客服` 通報管理團隊處理，請勿於公開頻道對線。初犯者給予一次申訴機會，將賦予「觀察期」身分組並限制部分權限，可於 `#申訴法庭｜appeal-court` 提出申訴。再犯或申訴失敗者，將依情節輕重處以禁言、頻道限制、踢出或封鎖。
+
+紅線行為將逕行處分，不經警告：洩漏個資、惡意騷擾、仇恨言論、詐騙、NSFW 內容、會員限定內容外流、違反 Discord 服務條款，或其他嚴重破壞社群秩序之行為。
+
+### 💖 管理團隊的話
+本伺服器無複雜潛規則。謹記三項基本原則：尊重他人、尊重創作者、尊重隱私。如有任何疑問，請使用 `#TICKET｜客服` 聯繫 🛡️ 管理團隊。
+
+### 📋 關於處分機制
+🟢 初犯＝機會：初犯者會拿到「觀察期」身分組，暫時限制部分權限，同時保有申訴權利。
+🟡 再犯＝後果：可能是禁言、限制頻道、暫時踢出，或永久封鎖。
+🔴 紅線＝即時處分：個資、騷擾、仇恨、詐騙、NSFW、付費內容外流、Discord TOS 違規將直接處分。""",
+    },
+    "en": {
+        "label": "English",
+        "enabled": True,
+        "language_role_id": "",
+        "rules": """## 📜 Server Guidelines｜伺服器守則｜サーバールール
+
+### 1️⃣ Mutual Respect｜尊重彼此｜相互尊重
+Personal attacks, discrimination, harassment, bullying, slander, and hate speech are strictly prohibited. When disagreements arise, please remain rational and engage in issue-focused discourse rather than personal attacks.
+
+### 2️⃣ Maintain a Healthy Atmosphere｜維護氛圍｜雰囲気の維持
+Drama-baiting, trolling, and fan war incitement are strictly prohibited. Personal disputes should be resolved privately or escalated to the staff team. Please refrain from political or religious topics to avoid unnecessary conflicts. This server supports Chinese, English, and Japanese; please be respectful to non-native speakers.
+
+### 3️⃣ All-Age Standard｜全年齡規範｜全年齢対象
+This server is an all-ages space. NSFW content, nudity, sexual material, and related links are strictly prohibited. Discord Terms of Service apply.
+
+### 4️⃣ Verify Information｜資訊查證｜情報の検証
+Rumors, unverified claims, malicious speculation, and misinformation are prohibited. For sensitive topics such as VTuber graduations or reincarnation, please provide credible sources.
+
+### 5️⃣ Respect Intellectual Property｜尊重智慧財產｜知的財産の尊重
+Art theft, unauthorized reposting, and leaking of members-only or paid content are strictly forbidden. Proper credit to original creators is required, and permission must be obtained before sharing.
+
+### 6️⃣ Absolute Privacy Protection｜隱私絕對保護｜プライバシーの絶対的保護
+Privacy is the absolute red line of this server. Sharing, requesting, or distributing personal information is prohibited. Public channels strictly forbid any discussion of VTubers' past identities, whether explicit, implied, abbreviated, or alluded. Reincarnation-related discussions must be conducted in designated channels after obtaining the 「👻 Deep Traveler」 role in `#roles`.
+
+Past activities and current activities may be discussed as separate topics, but linking or implying that a past identity and current identity are the same person is prohibited in public channels and will be treated as a privacy violation.
+
+### 7️⃣ No Spam or Advertising｜禁止洗版與廣告｜スパム・広告の禁止
+Spam, flooding, repeated messaging, emoji spam, bot abuse, and mass pings are prohibited. Advertising other servers, communities, commercial content, or recruitment requires prior staff approval.
+
+### 8️⃣ Management and Appeals｜管理與申訴｜運営と異議申し立て
+Please report violations to staff via `#TICKET｜客服`; do not engage publicly. First-time offenders are granted one appeal opportunity, receive a probationary role with restricted permissions, and may appeal in `#申訴法庭｜appeal-court`. Repeated violations or failed appeals may result in mutes, channel restrictions, kicks, or bans.
+
+Immediate action without warning applies to doxxing, harassment, hate speech, scams, NSFW content, paid content leaks, Discord TOS violations, and severe disruption.
+
+### 💖 A Note from the Staff
+No hidden rules. Three core principles: Respect others. Respect creators. Respect privacy. For questions, contact 🛡️ Staff via `#TICKET｜客服`.
+
+### 📋 About Enforcement
+🟢 First Offense = A Chance: first-time offenders receive a probationary role and appeal rights.
+🟡 Repeated Offense = Consequences: actions may escalate to mutes, restrictions, kicks, or bans.
+🔴 Red Line = Immediate Action: doxxing, harassment, hate, scams, NSFW, paid content leaks, and Discord TOS violations receive immediate action.""",
+    },
+    "ja": {
+        "label": "日本語",
+        "enabled": True,
+        "language_role_id": "",
+        "rules": """## 📜 サーバールール｜伺服器守則｜Server Guidelines
+
+### 1️⃣ 相互尊重｜尊重彼此｜Mutual Respect
+人格攻撃・差別・ハラスメント・いじめ・誹謗中傷・ヘイトスピーチを固く禁じます。意見が異なる場合は、冷静に建設的な議論をお願いいたします。
+
+### 2️⃣ 雰囲気の維持｜維護氛圍｜Maintain a Healthy Atmosphere
+対立煽り・釣り・ファン同士の争いを誘発する行為を固く禁じます。個人的な揉め事は個別に解決するか、スタッフへご連絡ください。政治的・宗教的な話題は、不要な争いを避けるためお控えください。当サーバーは中国語・英語・日本語での交流を支援しております。非母語話者への配慮をお願いいたします。
+
+### 3️⃣ 全年齢対象｜全年齡規範｜All-Age Standard
+当サーバーは全年齢対象の空間です。わいせつ・露出・性的暗示・R18／NSFWコンテンツ及び関連リンクを固く禁じます。Discord利用規約も厳守してください。
+
+### 4️⃣ 情報の検証｜資訊查證｜Verify Information
+デマ・未確認情報・悪意のある憶測・誤解を招く発言を禁止します。VTuberの卒業・転生などデリケートな話題については、信頼できる情報源を明示してください。
+
+### 5️⃣ 知的財産の尊重｜尊重智慧財產｜Respect Intellectual Property
+画像の無断使用・無断転載・有料コンテンツの流出を固く禁じます。転載時は必ず出典を明記し、事前に許可を取得してください。
+
+### 6️⃣ プライバシーの絶対的保護｜隱私絕對保護｜Absolute Privacy Protection
+プライバシーは当サーバーにおける絶対的な守備線です。個人情報の共有・要求・拡散を固く禁じます。公開チャンネルにおける「中の人」に関する言及・暗示・略語・謎かけ・誘導を一切禁止します。転生関連の話題は `#roles` にて「👻 深度旅人」ロールを取得の上、専用チャンネルをご利用ください。
+
+過去の活動と現在の活動は別個の話題として扱えますが、公開チャンネルで過去の身份と現在の身份を同一人物として連結・暗示する行為は禁止されます。
+
+### 7️⃣ スパム・広告の禁止｜禁止洗版與廣告｜No Spam or Advertising
+連投・スパム・大量メッセージ・絵文字荒らし・Bot乱用・大量メンションを禁止します。他サーバー・コミュニティ・商業コンテンツ・募集情報の宣伝は、事前にスタッフの許可を得てください。
+
+### 8️⃣ 運営と異議申し立て｜管理與申訴｜Management and Appeals
+違反行為は `#TICKET｜客服` にてスタッフへご報告ください。初回違反者には異議申し立ての機会を保証し、「観察期間」ロールを付与の上、`#申訴法庭｜appeal-court` にて説明の機会を設けます。再違反または申し立て却下の場合は、ミュート・チャンネル制限・キック・BAN等の措置を取ります。
+
+即時処分対象：個人情報流出・嫌がらせ・ヘイト・詐欺・NSFW・有料コンテンツ流出・Discord利用規約違反・その他重大な秩序破壊。
+
+### 💖 スタッフより
+複雑な暗黙ルールはございません。他者への尊重・クリエイターへの尊重・プライバシーの尊重をお守りください。ご不明な点は `#TICKET｜客服` にて 🛡️ スタッフまでお問い合わせください。
+
+### 📋 処分について
+🟢 初回違反＝チャンス：観察期間ロールと異議申し立ての権利があります。
+🟡 再違反＝結果：ミュート、制限、キック、BAN へ進む場合があります。
+🔴 レッドライン＝即時処分：個人情報、嫌がらせ、ヘイト、詐欺、NSFW、有料コンテンツ流出、Discord規約違反は警告なしで処分されます。""",
+    },
 }
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -151,6 +290,34 @@ class SavedUpdatePayload(BaseModel):
     guild_id: str
     message_id: str
     payload: dict
+
+
+class ModerationSettingsPayload(BaseModel):
+    probation_role_id: str = ""
+    log_channel_id: str = ""
+
+
+class ModerationCasePayload(BaseModel):
+    guild_id: str
+    target_user_id: str
+    target_display: str = ""
+    rule_number: str = ""
+    violation_type: str = ""
+    severity: str = "normal"
+    action: str = "warning"
+    reason: str
+    evidence_url: str = ""
+    notes: str = ""
+    status: str = "open"
+    probation_role_id: str = ""
+    remove_role_id: str = ""
+    timeout_minutes: int = 0
+    log_channel_id: str = ""
+
+
+class ModerationResolvePayload(BaseModel):
+    status: str = "resolved"
+    notes: str = ""
 
 
 def bot_returncode():
@@ -648,6 +815,86 @@ def onboarding_panel_payload(guild_id, config):
     }
 
 
+def server_rules_onboarding_defaults():
+    payload = dict(SERVER_RULES_ONBOARDING_TEXT)
+    payload["languages"] = {code: dict(item) for code, item in SERVER_RULES_LANGUAGES.items()}
+    return payload
+
+
+def next_case_id(config, guild_id):
+    cases = config.get("moderation_cases", {}).get(str(guild_id), [])
+    max_seen = 0
+    for item in cases:
+        raw = str(item.get("case_id", "")).removeprefix("CASE-")
+        if raw.isdigit():
+            max_seen = max(max_seen, int(raw))
+    return f"CASE-{max_seen + 1:04d}"
+
+
+def normalize_moderation_settings(value):
+    if not isinstance(value, dict):
+        return {"probation_role_id": "", "log_channel_id": ""}
+    return {
+        "probation_role_id": str(value.get("probation_role_id") or ""),
+        "log_channel_id": str(value.get("log_channel_id") or ""),
+    }
+
+
+def moderation_case_embed(case):
+    lines = [
+        f"Target: <@{case.get('target_user_id')}>",
+        f"Action: {case.get('action')}",
+        f"Rule: {case.get('rule_number') or 'unspecified'}",
+        f"Severity: {case.get('severity')}",
+        f"Status: {case.get('status')}",
+        "",
+        str(case.get("reason") or ""),
+    ]
+    if case.get("evidence_url"):
+        lines.append(f"Evidence: {case['evidence_url']}")
+    if case.get("notes"):
+        lines.append(f"Notes: {case['notes']}")
+    return {
+        "title": f"Moderation {case.get('case_id')}",
+        "description": "\n".join(lines)[:4096],
+        "color": COLOR_MAP["Yellow"] if case.get("severity") != "red_line" else COLOR_MAP["Red"],
+        "footer": {"text": f"Actor: {case.get('actor') or 'dashboard'}"},
+    }
+
+
+def send_moderation_log(case, channel_id):
+    if not str(channel_id or "").isdigit():
+        return
+    discord_request(
+        "POST",
+        f"/channels/{channel_id}/messages",
+        {"embeds": [moderation_case_embed(case)], "allowed_mentions": {"parse": []}},
+    )
+
+
+def apply_moderation_action(payload, settings):
+    action = str(payload.action or "warning")
+    guild_id = str(payload.guild_id)
+    user_id = str(payload.target_user_id)
+    if action == "probation":
+        role_id = str(payload.probation_role_id or settings.get("probation_role_id") or "")
+        if not role_id.isdigit():
+            raise HTTPException(status_code=400, detail="Choose a probation role")
+        discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
+    elif action == "timeout":
+        minutes = int(payload.timeout_minutes or 0)
+        if minutes <= 0:
+            raise HTTPException(status_code=400, detail="Timeout minutes must be greater than 0")
+        until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        discord_request("PATCH", f"/guilds/{guild_id}/members/{user_id}", {"communication_disabled_until": until})
+    elif action == "remove_role":
+        role_id = str(payload.remove_role_id or "")
+        if not role_id.isdigit():
+            raise HTTPException(status_code=400, detail="Choose a role to remove")
+        discord_request("DELETE", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
+    return action
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
@@ -778,6 +1025,18 @@ def save_onboarding(guild_id: str, payload: OnboardingPayload):
     return config
 
 
+@app.post("/api/onboarding/{guild_id}/server-rules-defaults", dependencies=[Depends(require_admin)])
+def apply_server_rules_defaults(guild_id: str):
+    existing = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+    defaults = server_rules_onboarding_defaults()
+    existing.update({key: value for key, value in defaults.items() if key != "languages"})
+    existing["languages"] = defaults["languages"]
+    config = normalize_onboarding_config(existing)
+    upsert_onboarding(guild_id, config)
+    append_audit_log("loaded_defaults", "onboarding", guild_id, config.get("panel_message_id", ""), {}, request_actor())
+    return config
+
+
 @app.post("/api/onboarding/{guild_id}/publish", dependencies=[Depends(require_admin)])
 def publish_onboarding(guild_id: str):
     config = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
@@ -816,6 +1075,72 @@ def publish_onboarding(guild_id: str):
         request_actor(),
     )
     return {"ok": True, "message_id": panel_message_id, "guild_id": guild_id, "record": config}
+
+
+@app.get("/api/moderation/{guild_id}", dependencies=[Depends(require_admin)])
+def get_moderation(guild_id: str, limit: int = Query(50, ge=1, le=100)):
+    config = load_config()
+    return {
+        "settings": normalize_moderation_settings(config.get("moderation_settings", {}).get(str(guild_id), {})),
+        "cases": config.get("moderation_cases", {}).get(str(guild_id), [])[:limit],
+    }
+
+
+@app.put("/api/moderation/{guild_id}/settings", dependencies=[Depends(require_admin)])
+def save_moderation_settings(guild_id: str, payload: ModerationSettingsPayload):
+    settings = normalize_moderation_settings(model_to_dict(payload))
+    set_moderation_settings(guild_id, settings)
+    append_audit_log("saved_settings", "moderation", guild_id, "", settings, request_actor())
+    return settings
+
+
+@app.post("/api/moderation/cases", dependencies=[Depends(require_admin)])
+def create_moderation_case(payload: ModerationCasePayload):
+    if not str(payload.guild_id).isdigit():
+        raise HTTPException(status_code=400, detail="Choose a server")
+    if not str(payload.target_user_id).isdigit():
+        raise HTTPException(status_code=400, detail="Target user ID must be numeric")
+    if not payload.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required")
+    config = load_config()
+    settings = normalize_moderation_settings(config.get("moderation_settings", {}).get(str(payload.guild_id), {}))
+    action = apply_moderation_action(payload, settings)
+    case = {
+        "case_id": next_case_id(config, payload.guild_id),
+        "guild_id": str(payload.guild_id),
+        "target_user_id": str(payload.target_user_id),
+        "target_display": payload.target_display.strip(),
+        "rule_number": payload.rule_number.strip(),
+        "violation_type": payload.violation_type.strip(),
+        "severity": payload.severity if payload.severity in ("normal", "serious", "red_line") else "normal",
+        "action": action,
+        "reason": payload.reason.strip(),
+        "evidence_url": payload.evidence_url.strip(),
+        "notes": payload.notes.strip(),
+        "status": payload.status if payload.status in ("open", "accepted", "rejected", "escalated", "resolved") else "open",
+        "actor": request_actor(),
+        "ts": int(time.time()),
+    }
+    append_moderation_case(payload.guild_id, case)
+    log_channel_id = payload.log_channel_id or settings.get("log_channel_id")
+    if log_channel_id:
+        send_moderation_log(case, log_channel_id)
+    append_audit_log("created_case", "moderation", payload.guild_id, case["case_id"], {"action": action, "target": case["target_user_id"]}, request_actor())
+    return case
+
+
+@app.patch("/api/moderation/{guild_id}/cases/{case_id}", dependencies=[Depends(require_admin)])
+def resolve_moderation_case(guild_id: str, case_id: str, payload: ModerationResolvePayload):
+    status = payload.status if payload.status in ("open", "accepted", "rejected", "escalated", "resolved") else "resolved"
+    updated = update_moderation_case(
+        guild_id,
+        case_id,
+        {"status": status, "resolution_notes": payload.notes.strip(), "resolved_ts": int(time.time()), "resolved_by": request_actor()},
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Moderation case not found")
+    append_audit_log("resolved_case", "moderation", guild_id, case_id, {"status": status}, request_actor())
+    return updated
 
 
 @app.post("/api/messages", dependencies=[Depends(require_admin)])

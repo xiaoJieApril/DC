@@ -20,6 +20,7 @@
       <button class="nav" data-view="messages">Send Message</button>
       <button class="nav" data-view="roles">Reaction Roles</button>
       <button class="nav" data-view="onboarding">New Member Rules</button>
+      <button class="nav" data-view="moderation">Moderation</button>
       <button class="nav" data-view="saved">Saved</button>
       <button class="nav" data-view="settings">Settings</button>
       <button id="logoutBtn" class="nav danger">Logout</button>
@@ -75,6 +76,7 @@
               <button data-jump="messages">Send Message</button>
               <button data-jump="roles" class="secondary">Create Role Panel</button>
               <button data-jump="onboarding" class="secondary">New Member Rules</button>
+              <button data-jump="moderation" class="secondary">Moderation Cases</button>
               <button data-jump="saved" class="secondary">Manage Saved</button>
             </div>
           </div>
@@ -219,9 +221,47 @@
             </div>
             <p id="obInfo" class="muted">Publish a selector in the rules channel. Multiple selected languages will show English rules.</p>
             <div class="actions">
+              <button id="loadServerRulesBtn" class="secondary">Load Server Rules</button>
               <button id="saveOnboardingBtn">Save New Member Rules</button>
               <button id="publishOnboardingBtn" class="secondary">Publish Language Panel</button>
             </div>
+          </div>
+        </section>
+
+        <!-- Moderation: staff-created cases, manual actions, and appeal status tracking. -->
+        <section id="moderation" class="view hidden">
+          <div class="panel">
+            <h2>Moderation Cases</h2>
+            <div class="grid three">
+              <label>Server<select id="modGuild"></select></label>
+              <label>Log Channel<select id="modLogChannel"></select></label>
+              <label>Probation Role<select id="modProbationRole"></select></label>
+            </div>
+            <div class="actions">
+              <button id="saveModSettingsBtn" class="secondary">Save Moderation Settings</button>
+              <button id="refreshModBtn" class="secondary">Refresh Cases</button>
+            </div>
+            <div class="grid three">
+              <label>Target User ID<input id="modTargetId" placeholder="Discord user ID" /></label>
+              <label>Target Display<input id="modTargetDisplay" placeholder="Optional display name" /></label>
+              <label>Rule Number<input id="modRuleNumber" placeholder="1 / 6 / red line" /></label>
+              <label>Violation Type<input id="modViolationType" placeholder="privacy / spam / NSFW" /></label>
+              <label>Severity<select id="modSeverity"><option value="normal">Normal</option><option value="serious">Serious</option><option value="red_line">Red Line</option></select></label>
+              <label>Action<select id="modAction"><option value="warning">Warning</option><option value="probation">Give Probation Role</option><option value="timeout">Timeout</option><option value="remove_role">Remove Role</option><option value="note">Record Only</option></select></label>
+              <label>Timeout Minutes<input id="modTimeoutMinutes" type="number" min="0" value="0" /></label>
+              <label>Role To Remove<select id="modRemoveRole"></select></label>
+              <label>Appeal Status<select id="modStatus"><option value="open">Open</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="escalated">Escalated</option><option value="resolved">Resolved</option></select></label>
+            </div>
+            <label>Reason<textarea id="modReason" rows="4" placeholder="What happened?"></textarea></label>
+            <label>Evidence URL<input id="modEvidenceUrl" placeholder="Message link, screenshot URL, or ticket link" /></label>
+            <label>Notes<textarea id="modNotes" rows="3" placeholder="Internal staff notes"></textarea></label>
+            <div class="actions">
+              <button id="createModCaseBtn">Create Case</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Case Log</h2>
+            <div id="modCaseList" class="audit-list"></div>
           </div>
         </section>
 

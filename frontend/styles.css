@@ -429,7 +429,8 @@ pre {
 
 .mapping-item button,
 .saved-item button,
-.recent-item button {
+.recent-item button,
+.audit-item button {
   width: auto;
 }
 

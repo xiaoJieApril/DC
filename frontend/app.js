@@ -9,6 +9,7 @@ const state = {
   mappings: [],
   savedRows: [],
   auditRows: [],
+  moderation: { settings: null, cases: [] },
   onboarding: null,
   editingMessage: null,
   editingRolePanel: null,
@@ -26,6 +27,7 @@ const latestUpdates = [
   "Send Message can mention roles and members from the dashboard.",
   "Role/member mention tokens are inserted automatically.",
   "Message preview now shows mention chips.",
+  "Moderation cases can track warnings, probation, timeouts, and appeals.",
 ];
 let memberSearchTimer = null;
 
@@ -107,6 +109,7 @@ function setView(name) {
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
     onboarding: ["New Member Rules", "Private rules gate with language selection."],
+    moderation: ["Moderation", "Record warnings, probation, timeout, and appeal status."],
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
   };
@@ -114,6 +117,8 @@ function setView(name) {
   $("viewSubtitle").textContent = titles[name][1];
   if (name === "onboarding") {
     ensureOnboardingLoaded();
+  } else if (name === "moderation") {
+    ensureModerationLoaded();
   }
 }
 
@@ -129,6 +134,21 @@ async function ensureOnboardingLoaded() {
     await loadOnboardingControls();
   } catch (err) {
     $("obInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+  }
+}
+
+async function ensureModerationLoaded() {
+  try {
+    if (!state.guilds.length) {
+      await loadGuilds();
+      return;
+    }
+    if (!$("modGuild").options.length) {
+      fillSelect($("modGuild"), state.guilds, (g) => g.name, (g) => g.id);
+    }
+    await refreshModerationControls();
+  } catch (err) {
+    $("modCaseList").innerHTML = `<p class="muted">Could not load moderation cases: ${escapeHtml(err.message)}</p>`;
   }
 }
 
@@ -270,12 +290,14 @@ async function loadGuilds() {
     fillSelectMessage($("msgGuild"), "Server list unavailable");
     fillSelectMessage($("rrGuild"), "Server list unavailable");
     fillSelectMessage($("obGuild"), "Server list unavailable");
+    fillSelectMessage($("modGuild"), "Server list unavailable");
     toast(`Server list unavailable: ${err.message}`);
     return;
   }
   fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
   fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
+  fillSelect($("modGuild"), state.guilds, (g) => g.name, (g) => g.id);
   if (state.guilds.length) {
     await Promise.allSettled([
       loadChannels("msg"),
@@ -443,6 +465,129 @@ async function publishOnboarding() {
   const result = await api(`/api/onboarding/${guildId}/publish`, { method: "POST" });
   applyOnboardingForm(result.record);
   toast(`Language panel published: ${result.message_id}`);
+  await loadAuditLogs();
+}
+
+async function applyServerRulesDefaults() {
+  const guildId = $("obGuild").value;
+  if (!guildId) return toast("Choose a server first.");
+  const config = await api(`/api/onboarding/${guildId}/server-rules-defaults`, { method: "POST" });
+  applyOnboardingForm(config);
+  toast("Server rules loaded into New Member Rules.");
+  await loadAuditLogs();
+}
+
+async function loadModerationRolesAndChannels() {
+  const guildId = $("modGuild").value;
+  if (!guildId) return;
+  const [channels, roles] = await Promise.all([
+    api(`/api/discord/guilds/${guildId}/channels`),
+    api(`/api/discord/guilds/${guildId}/roles`),
+  ]);
+  state.channels[guildId] = channels;
+  state.roles[guildId] = roles.sort((a, b) => (b.position || 0) - (a.position || 0));
+  fillSelect($("modLogChannel"), [{ id: "", name: "No log channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
+  const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
+  fillSelect($("modProbationRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+  fillSelect($("modRemoveRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+}
+
+async function refreshModerationControls() {
+  await loadModerationRolesAndChannels();
+  await loadModeration();
+}
+
+async function loadModeration() {
+  const guildId = $("modGuild").value;
+  if (!guildId) return;
+  const data = await api(`/api/moderation/${guildId}?limit=80`);
+  state.moderation = data;
+  const settings = data.settings || {};
+  if ([...$("modLogChannel").options].some((option) => option.value === settings.log_channel_id)) {
+    $("modLogChannel").value = settings.log_channel_id || "";
+  }
+  if ([...$("modProbationRole").options].some((option) => option.value === settings.probation_role_id)) {
+    $("modProbationRole").value = settings.probation_role_id || "";
+  }
+  renderModerationCases(data.cases || []);
+}
+
+function renderModerationCases(rows) {
+  const list = $("modCaseList");
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = '<p class="muted">No moderation cases yet.</p>';
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(row.case_id || "CASE")} · ${escapeHtml(row.action || "case")} · ${escapeHtml(row.status || "open")}</strong>
+        <div class="saved-meta">Target ${escapeHtml(row.target_display || row.target_user_id || "")} · Rule ${escapeHtml(row.rule_number || "unspecified")} · ${escapeHtml(when)}</div>
+        <div class="saved-meta">${escapeHtml(row.reason || "")}</div>
+      </div>
+      <button class="secondary" data-case="${escapeHtml(row.case_id || "")}">Resolve</button>
+    `;
+    item.querySelector("button").addEventListener("click", () => resolveModerationCase(row.case_id));
+    list.appendChild(item);
+  });
+}
+
+async function saveModerationSettings() {
+  const guildId = $("modGuild").value;
+  await api(`/api/moderation/${guildId}/settings`, {
+    method: "PUT",
+    body: JSON.stringify({
+      probation_role_id: $("modProbationRole").value,
+      log_channel_id: $("modLogChannel").value,
+    }),
+  });
+  toast("Moderation settings saved.");
+  await loadAuditLogs();
+}
+
+async function createModerationCase() {
+  const guildId = $("modGuild").value;
+  const result = await api("/api/moderation/cases", {
+    method: "POST",
+    body: JSON.stringify({
+      guild_id: guildId,
+      target_user_id: $("modTargetId").value.trim(),
+      target_display: $("modTargetDisplay").value.trim(),
+      rule_number: $("modRuleNumber").value.trim(),
+      violation_type: $("modViolationType").value.trim(),
+      severity: $("modSeverity").value,
+      action: $("modAction").value,
+      reason: $("modReason").value.trim(),
+      evidence_url: $("modEvidenceUrl").value.trim(),
+      notes: $("modNotes").value.trim(),
+      status: $("modStatus").value,
+      probation_role_id: $("modProbationRole").value,
+      remove_role_id: $("modRemoveRole").value,
+      timeout_minutes: Number($("modTimeoutMinutes").value || 0),
+      log_channel_id: $("modLogChannel").value,
+    }),
+  });
+  toast(`Moderation case created: ${result.case_id}`);
+  ["modTargetId", "modTargetDisplay", "modRuleNumber", "modViolationType", "modReason", "modEvidenceUrl", "modNotes"].forEach((id) => {
+    $(id).value = "";
+  });
+  await loadModeration();
+  await loadAuditLogs();
+}
+
+async function resolveModerationCase(caseId) {
+  if (!caseId) return;
+  const guildId = $("modGuild").value;
+  const updated = await api(`/api/moderation/${guildId}/cases/${caseId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "resolved", notes: "Resolved from dashboard." }),
+  });
+  toast(`Case ${updated.case_id} resolved.`);
+  await loadModeration();
   await loadAuditLogs();
 }
 
@@ -804,7 +949,8 @@ async function loadSaved() {
 }
 
 function actionLabel(row) {
-  const section = row.section === "messages" ? "Message" : "Role panel";
+  const section =
+    row.section === "messages" ? "Message" : row.section === "moderation" ? "Moderation" : "Role panel";
   const action = {
     sent: "sent",
     posted: "posted",
@@ -812,6 +958,10 @@ function actionLabel(row) {
     updated_record: "record updated",
     deleted: "deleted from Discord",
     deleted_record: "record deleted",
+    created_case: "case created",
+    resolved_case: "case resolved",
+    saved_settings: "settings saved",
+    loaded_defaults: "defaults loaded",
   }[row.action] || row.action;
   return `${section} ${action}`;
 }
@@ -1031,8 +1181,15 @@ function wireEvents() {
   $("obGuild").addEventListener("change", async () => {
     await runAction("Load onboarding server", refreshOnboardingControls);
   });
+  $("loadServerRulesBtn").addEventListener("click", () => runAction("Load server rules", applyServerRulesDefaults));
   $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
   $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
+  $("modGuild").addEventListener("change", async () => {
+    await runAction("Load moderation server", refreshModerationControls);
+  });
+  $("saveModSettingsBtn").addEventListener("click", () => runAction("Save moderation settings", saveModerationSettings));
+  $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", loadModeration));
+  $("createModCaseBtn").addEventListener("click", () => runAction("Create moderation case", createModerationCase));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {
