@@ -141,8 +141,9 @@ async function ensureOnboardingLoaded() {
 
 async function ensureModerationLoaded() {
   try {
+    fillColors();
     if (!state.guilds.length) {
-      await loadGuilds();
+      await ensureGuildsLoaded();
     }
     if (!state.guilds.length) {
       fillSelectMessage($("modGuild"), "Server list unavailable");
@@ -150,9 +151,7 @@ async function ensureModerationLoaded() {
       setTicketStatus("Ticket list unavailable until a server is loaded.");
       return;
     }
-    if (!$("modGuild").options.length) {
-      fillSelect($("modGuild"), state.guilds, (g) => g.name, (g) => g.id);
-    }
+    fillGuildSelectors();
     await refreshModerationControls();
   } catch (err) {
     setModerationStatus(`Could not load moderation data: ${err.message}`);
@@ -292,22 +291,7 @@ async function stopBot() {
 }
 
 async function loadGuilds() {
-  try {
-    state.guilds = await api("/api/discord/guilds");
-  } catch (err) {
-    fillSelectMessage($("msgGuild"), "Server list unavailable");
-    fillSelectMessage($("rrGuild"), "Server list unavailable");
-    fillSelectMessage($("obGuild"), "Server list unavailable");
-    fillSelectMessage($("modGuild"), "Server list unavailable");
-    setModerationStatus("Server list unavailable. Check the dashboard API connection and try again.");
-    setTicketStatus("Ticket settings unavailable until the server list loads.");
-    toast(`Server list unavailable: ${err.message}`);
-    return;
-  }
-  fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
-  fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
-  fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
-  fillSelect($("modGuild"), state.guilds, (g) => g.name, (g) => g.id);
+  await ensureGuildsLoaded(true);
   if (state.guilds.length) {
     await Promise.allSettled([
       loadChannels("msg"),
@@ -320,44 +304,108 @@ async function loadGuilds() {
   }
 }
 
+function fillGuildSelectors() {
+  ["msgGuild", "rrGuild", "obGuild", "modGuild"].forEach((id) => {
+    if (!$(id)) return;
+    if (!state.guilds.length) {
+      fillSelectMessage($(id), "No servers available");
+      return;
+    }
+    const current = $(id).value;
+    fillSelect($(id), state.guilds, (g) => g.name, (g) => g.id);
+    if ([...$(id).options].some((option) => option.value === current)) {
+      $(id).value = current;
+    }
+  });
+}
+
+async function ensureGuildsLoaded(force = false) {
+  if (state.guilds.length && !force) {
+    fillGuildSelectors();
+    return state.guilds;
+  }
+  ["msgGuild", "rrGuild", "obGuild", "modGuild"].forEach((id) => {
+    if ($(id)) fillSelectMessage($(id), "Loading servers...");
+  });
+  try {
+    state.guilds = await api("/api/discord/guilds");
+  } catch (err) {
+    state.guilds = [];
+    fillSelectMessage($("msgGuild"), "Server list unavailable");
+    fillSelectMessage($("rrGuild"), "Server list unavailable");
+    fillSelectMessage($("obGuild"), "Server list unavailable");
+    fillSelectMessage($("modGuild"), "Server list unavailable");
+    setModerationStatus("Server list unavailable. Check the dashboard API connection and try again.");
+    setTicketStatus("Ticket settings unavailable until the server list loads.");
+    toast(`Server list unavailable: ${err.message}`);
+    return [];
+  }
+  fillGuildSelectors();
+  return state.guilds;
+}
+
+async function getGuildChannels(guildId, force = false) {
+  if (!guildId) return [];
+  if (state.channels[guildId] && !force) return state.channels[guildId];
+  state.channels[guildId] = await api(`/api/discord/guilds/${guildId}/channels`);
+  return state.channels[guildId];
+}
+
+async function getGuildRoles(guildId, force = false) {
+  if (!guildId) return [];
+  if (state.roles[guildId] && !force) return state.roles[guildId];
+  const roles = await api(`/api/discord/guilds/${guildId}/roles`);
+  state.roles[guildId] = roles.sort((a, b) => (b.position || 0) - (a.position || 0));
+  return state.roles[guildId];
+}
+
+async function fillChannelSelect(selectId, guildId, placeholder = "", force = false) {
+  const select = $(selectId);
+  if (!select || !guildId) return [];
+  fillSelectMessage(select, "Loading channels...");
+  try {
+    const channels = await getGuildChannels(guildId, force);
+    const rows = placeholder ? [{ id: "", name: placeholder }, ...channels] : channels;
+    fillSelect(select, rows, (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
+    return channels;
+  } catch (err) {
+    fillSelectMessage(select, "Channel list unavailable");
+    throw err;
+  }
+}
+
+async function fillRoleSelect(selectId, guildId, placeholder = "", force = false) {
+  const select = $(selectId);
+  if (!select || !guildId) return [];
+  fillSelectMessage(select, "Loading roles...");
+  try {
+    const roles = await getGuildRoles(guildId, force);
+    const rows = placeholder ? [{ id: "", name: placeholder }, ...roles] : roles;
+    fillSelect(select, rows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+    return roles;
+  } catch (err) {
+    fillSelectMessage(select, "Role list unavailable");
+    throw err;
+  }
+}
+
 async function loadChannels(prefix) {
   const guildId = $(`${prefix}Guild`).value;
   if (!guildId) return;
-  try {
-    state.channels[guildId] = await api(`/api/discord/guilds/${guildId}/channels`);
-  } catch (err) {
-    fillSelectMessage($(`${prefix}Channel`), "Channel list unavailable");
-    throw err;
-  }
-  fillSelect(
-    $(`${prefix}Channel`),
-    state.channels[guildId],
-    (c) => `#${c.name}`,
-    (c) => c.id,
-  );
+  await fillChannelSelect(`${prefix}Channel`, guildId);
 }
 
 async function loadRoles() {
   const guildId = $("rrGuild").value;
   if (!guildId) return;
-  state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-  state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  fillSelect(
-    $("rrRole"),
-    state.roles[guildId],
-    (r) => `${r.name} (${r.id})`,
-    (r) => r.id,
-  );
+  await fillRoleSelect("rrRole", guildId);
 }
 
 async function loadMessageMentionRoles() {
   // Reuse the roles endpoint so role mentions work without a separate API.
   const guildId = $("msgGuild").value;
   if (!guildId) return;
-  if (!state.roles[guildId]) {
-    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  }
+  await getGuildRoles(guildId);
   renderRoleMentionResults();
   renderMessagePreview();
 }
@@ -365,12 +413,7 @@ async function loadMessageMentionRoles() {
 async function loadOnboardingRoles() {
   const guildId = $("obGuild").value;
   if (!guildId) return;
-  if (!state.roles[guildId]) {
-    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  }
-  const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
-  fillSelect($("obFanRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+  await fillRoleSelect("obFanRole", guildId, "Choose role");
 }
 
 async function loadOnboardingControls() {
@@ -487,38 +530,25 @@ async function applyServerRulesDefaults() {
   await loadAuditLogs();
 }
 
-async function loadModerationRolesAndChannels() {
+async function loadModerationRolesAndChannels(force = false) {
   const guildId = $("modGuild").value;
   if (!guildId) return;
   setModerationStatus("Loading moderation selectors...");
   setTicketStatus("Loading ticket selectors...");
-  let channels = [];
-  let roles = [];
   try {
-    [channels, roles] = await Promise.all([
-      api(`/api/discord/guilds/${guildId}/channels`),
-      api(`/api/discord/guilds/${guildId}/roles`),
-    ]);
+    await fillChannelSelect("modLogChannel", guildId, "No log channel", force);
+    await fillChannelSelect("ticketChannel", guildId, "Choose ticket channel");
+    await fillChannelSelect("ticketLogChannel", guildId, "Use moderation log / choose channel");
+    await fillRoleSelect("modProbationRole", guildId, "Choose role", force);
+    await fillRoleSelect("modRemoveRole", guildId, "Choose role");
   } catch (err) {
-    fillSelectMessage($("modLogChannel"), "Channel list unavailable");
-    fillSelectMessage($("ticketChannel"), "Channel list unavailable");
-    fillSelectMessage($("ticketLogChannel"), "Channel list unavailable");
-    fillSelectMessage($("modProbationRole"), "Role list unavailable");
-    fillSelectMessage($("modRemoveRole"), "Role list unavailable");
     throw err;
   }
-  state.channels[guildId] = channels;
-  state.roles[guildId] = roles.sort((a, b) => (b.position || 0) - (a.position || 0));
-  fillSelect($("modLogChannel"), [{ id: "", name: "No log channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
-  fillSelect($("ticketChannel"), [{ id: "", name: "Choose ticket channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
-  fillSelect($("ticketLogChannel"), [{ id: "", name: "Use moderation log / choose channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
-  const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
-  fillSelect($("modProbationRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
-  fillSelect($("modRemoveRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
 }
 
-async function refreshModerationControls() {
-  await loadModerationRolesAndChannels();
+async function refreshModerationControls(force = false) {
+  if (force) await ensureGuildsLoaded(true);
+  await loadModerationRolesAndChannels(force);
   await Promise.all([loadModeration(), loadTickets()]);
 }
 
@@ -1327,7 +1357,7 @@ function wireEvents() {
     await runAction("Load moderation server", refreshModerationControls);
   });
   $("saveModSettingsBtn").addEventListener("click", () => runAction("Save moderation settings", saveModerationSettings));
-  $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", refreshModerationControls));
+  $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", () => refreshModerationControls(true)));
   $("createModCaseBtn").addEventListener("click", () => runAction("Create moderation case", createModerationCase));
   $("saveTicketSettingsBtn").addEventListener("click", () => runAction("Save ticket settings", saveTicketSettings));
   $("publishTicketPanelBtn").addEventListener("click", () => runAction("Publish ticket panel", publishTicketPanel));
