@@ -20,7 +20,22 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from storage import append_audit_log, append_moderation_case, delete_record, init_db, load_config, save_config, set_moderation_settings, storage_name, update_moderation_case, upsert_message, upsert_onboarding, upsert_reaction_role
+from storage import (
+    append_audit_log,
+    append_moderation_case,
+    delete_record,
+    init_db,
+    load_config,
+    save_config,
+    set_moderation_settings,
+    set_ticket_settings,
+    storage_name,
+    update_moderation_case,
+    update_ticket,
+    upsert_message,
+    upsert_onboarding,
+    upsert_reaction_role,
+)
 
 
 load_dotenv()
@@ -316,6 +331,21 @@ class ModerationCasePayload(BaseModel):
 
 
 class ModerationResolvePayload(BaseModel):
+    status: str = "resolved"
+    notes: str = ""
+
+
+class TicketSettingsPayload(BaseModel):
+    ticket_channel_id: str = ""
+    log_channel_id: str = ""
+    panel_message_id: str = ""
+    panel_title: str = "Need help?"
+    panel_description: str = "Open a private ticket for staff review. Your message will be visible to staff only."
+    button_label: str = "Open Ticket"
+    panel_color: str = "Blurple"
+
+
+class TicketStatusPayload(BaseModel):
     status: str = "resolved"
     notes: str = ""
 
@@ -872,6 +902,51 @@ def send_moderation_log(case, channel_id):
     )
 
 
+def normalize_ticket_settings(value):
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "ticket_channel_id": str(value.get("ticket_channel_id") or ""),
+        "log_channel_id": str(value.get("log_channel_id") or ""),
+        "panel_message_id": str(value.get("panel_message_id") or ""),
+        "panel_title": str(value.get("panel_title") or "Need help?")[:256],
+        "panel_description": str(
+            value.get("panel_description")
+            or "Open a private ticket for staff review. Your message will be visible to staff only."
+        )[:4096],
+        "button_label": str(value.get("button_label") or "Open Ticket")[:80],
+        "panel_color": str(value.get("panel_color") or "Blurple"),
+    }
+
+
+def ticket_panel_payload(guild_id, settings):
+    # Public entry point; the ticket content is collected later in a private Discord modal.
+    return {
+        "content": None,
+        "embeds": [
+            {
+                "title": settings["panel_title"],
+                "description": settings["panel_description"],
+                "color": COLOR_MAP.get(settings.get("panel_color"), COLOR_MAP["Blurple"]),
+            }
+        ],
+        "components": [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 2,
+                        "style": 1,
+                        "label": settings["button_label"],
+                        "custom_id": f"ticket_open:{guild_id}",
+                    }
+                ],
+            }
+        ],
+        "allowed_mentions": {"parse": []},
+    }
+
+
 def apply_moderation_action(payload, settings):
     action = str(payload.action or "warning")
     guild_id = str(payload.guild_id)
@@ -1140,6 +1215,70 @@ def resolve_moderation_case(guild_id: str, case_id: str, payload: ModerationReso
     if not updated:
         raise HTTPException(status_code=404, detail="Moderation case not found")
     append_audit_log("resolved_case", "moderation", guild_id, case_id, {"status": status}, request_actor())
+    return updated
+
+
+@app.get("/api/tickets/{guild_id}", dependencies=[Depends(require_admin)])
+def get_tickets(guild_id: str, limit: int = Query(50, ge=1, le=100)):
+    config = load_config()
+    return {
+        "settings": normalize_ticket_settings(config.get("ticket_settings", {}).get(str(guild_id), {})),
+        "tickets": config.get("tickets", {}).get(str(guild_id), [])[:limit],
+    }
+
+
+@app.put("/api/tickets/{guild_id}/settings", dependencies=[Depends(require_admin)])
+def save_ticket_settings(guild_id: str, payload: TicketSettingsPayload):
+    existing = normalize_ticket_settings(load_config().get("ticket_settings", {}).get(str(guild_id), {}))
+    data = model_to_dict(payload)
+    if not data.get("panel_message_id"):
+        data["panel_message_id"] = existing.get("panel_message_id", "")
+    settings = normalize_ticket_settings(data)
+    set_ticket_settings(guild_id, settings)
+    append_audit_log("saved_settings", "tickets", guild_id, settings.get("panel_message_id", ""), settings, request_actor())
+    return settings
+
+
+@app.post("/api/tickets/{guild_id}/publish", dependencies=[Depends(require_admin)])
+def publish_ticket_panel(guild_id: str):
+    settings = normalize_ticket_settings(load_config().get("ticket_settings", {}).get(str(guild_id), {}))
+    channel_id = str(settings.get("ticket_channel_id") or "")
+    if not channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Choose a ticket channel")
+    channel = discord_request("GET", f"/channels/{channel_id}")
+    if str(channel.get("guild_id")) != str(guild_id):
+        raise HTTPException(status_code=400, detail="Selected ticket channel does not belong to this server")
+
+    payload = ticket_panel_payload(guild_id, settings)
+    panel_message_id = str(settings.get("panel_message_id") or "")
+    if panel_message_id:
+        try:
+            discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            panel_message_id = ""
+    if not panel_message_id:
+        message = discord_request("POST", f"/channels/{channel_id}/messages", payload)
+        panel_message_id = message["id"]
+
+    settings["panel_message_id"] = panel_message_id
+    set_ticket_settings(guild_id, settings)
+    append_audit_log("published_panel", "tickets", guild_id, panel_message_id, {"channel_id": channel_id}, request_actor())
+    return {"ok": True, "message_id": panel_message_id, "settings": settings}
+
+
+@app.patch("/api/tickets/{guild_id}/{ticket_id}", dependencies=[Depends(require_admin)])
+def update_ticket_status(guild_id: str, ticket_id: str, payload: TicketStatusPayload):
+    status = payload.status if payload.status in ("open", "resolved", "rejected", "escalated") else "resolved"
+    updated = update_ticket(
+        guild_id,
+        ticket_id,
+        {"status": status, "resolution_notes": payload.notes.strip(), "updated_ts": int(time.time()), "updated_by": request_actor()},
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    append_audit_log("updated_ticket", "tickets", guild_id, ticket_id, {"status": status}, request_actor())
     return updated
 
 

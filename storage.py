@@ -18,6 +18,8 @@ DEFAULT_CONFIG = {
     "onboarding": {},
     "moderation_cases": {},
     "moderation_settings": {},
+    "tickets": {},
+    "ticket_settings": {},
     "audit_logs": [],
 }
 
@@ -43,6 +45,8 @@ def normalize_config(data):
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
         "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
         "moderation_settings": data.get("moderation_settings", {}) if isinstance(data.get("moderation_settings", {}), dict) else {},
+        "tickets": data.get("tickets", {}) if isinstance(data.get("tickets", {}), dict) else {},
+        "ticket_settings": data.get("ticket_settings", {}) if isinstance(data.get("ticket_settings", {}), dict) else {},
         "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
     }
 
@@ -150,6 +154,36 @@ def update_moderation_case(guild_id, case_id, updates):
         guild_cases = config.setdefault("moderation_cases", {}).setdefault(str(guild_id), [])
         for item in guild_cases:
             if str(item.get("case_id")) == str(case_id):
+                item.update(dict(updates))
+                _save_config_unlocked(config)
+                return item
+    return None
+
+
+def set_ticket_settings(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("ticket_settings", {})[str(guild_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def append_ticket(guild_id, payload):
+    # Keep recent ticket intake in the same JSON store used by the dashboard and bot.
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_tickets = config.setdefault("tickets", {}).setdefault(str(guild_id), [])
+        guild_tickets.insert(0, dict(payload))
+        del guild_tickets[250:]
+        _save_config_unlocked(config)
+    return payload
+
+
+def update_ticket(guild_id, ticket_id, updates):
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_tickets = config.setdefault("tickets", {}).setdefault(str(guild_id), [])
+        for item in guild_tickets:
+            if str(item.get("ticket_id")) == str(ticket_id):
                 item.update(dict(updates))
                 _save_config_unlocked(config)
                 return item

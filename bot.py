@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from storage import append_moderation_case, init_db, load_config, save_config, update_moderation_case, upsert_message
+from storage import append_moderation_case, append_ticket, init_db, load_config, save_config, update_moderation_case, upsert_message
 
 load_dotenv()
 init_db()
@@ -221,6 +221,42 @@ def next_case_id(config, guild_id):
     return f"CASE-{max_seen + 1:04d}"
 
 
+def next_ticket_id(config, guild_id):
+    tickets = config.get("tickets", {}).get(str(guild_id), [])
+    max_seen = 0
+    for item in tickets:
+        raw = str(item.get("ticket_id", "")).removeprefix("TICKET-")
+        if raw.isdigit():
+            max_seen = max(max_seen, int(raw))
+    return f"TICKET-{max_seen + 1:04d}"
+
+
+def ticket_log_embed(ticket):
+    description = (
+        f"User: <@{ticket.get('user_id')}> ({ticket.get('user_id')})\n"
+        f"Status: {ticket.get('status')}\n"
+        f"Channel: <#{ticket.get('channel_id')}>\n\n"
+        f"{ticket.get('content')}"
+    )[:4096]
+    embed = discord.Embed(
+        title=f"{ticket.get('ticket_id')} · {ticket.get('subject')}",
+        description=description,
+        color=DISPLAY_COLOR_MAP["Blurple"],
+    )
+    embed.set_footer(text=f"Submitted by {ticket.get('user_display')}")
+    return embed
+
+
+async def send_ticket_log(guild, ticket, channel_id):
+    channel = guild.get_channel(int(channel_id)) if str(channel_id or "").isdigit() else None
+    if not channel:
+        return
+    try:
+        await channel.send(embed=ticket_log_embed(ticket), allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException as exc:
+        print(f"[TICKET] Could not send ticket log: {exc}")
+
+
 def create_moderation_case(ctx, member, action, reason, rule_number="", severity="normal", evidence_url="", notes="", status="open"):
     config = load_config()
     case = {
@@ -273,6 +309,47 @@ async def send_moderation_case_log(ctx, case):
 
 
 ALLOWED_MENTIONS = discord.AllowedMentions(users=True, roles=True, everyone=False)
+
+
+class TicketModal(discord.ui.Modal):
+    def __init__(self, guild_id):
+        super().__init__(title="Open Ticket")
+        self.guild_id = str(guild_id)
+        self.subject = discord.ui.InputText(label="Subject", placeholder="Short title", max_length=100)
+        self.content = discord.ui.InputText(
+            label="Content",
+            placeholder="Describe what staff should review",
+            style=discord.InputTextStyle.long,
+            max_length=1000,
+        )
+        self.add_item(self.subject)
+        self.add_item(self.content)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or str(interaction.guild.id) != self.guild_id:
+            await interaction.response.send_message("This ticket panel is not available here.", ephemeral=True)
+            return
+        config = load_config()
+        settings = config.get("ticket_settings", {}).get(self.guild_id, {})
+        ticket = {
+            "ticket_id": next_ticket_id(config, self.guild_id),
+            "guild_id": self.guild_id,
+            "user_id": str(interaction.user.id),
+            "user_display": getattr(interaction.user, "display_name", str(interaction.user)),
+            "subject": str(self.subject.value or "").strip(),
+            "content": str(self.content.value or "").strip(),
+            "status": "open",
+            "channel_id": str(getattr(interaction.channel, "id", "")),
+            "ts": int(time.time()),
+        }
+        if not ticket["subject"] or not ticket["content"]:
+            await interaction.response.send_message("Subject and content are required.", ephemeral=True)
+            return
+
+        # Store the ticket before staff notification so the dashboard is the source of truth.
+        append_ticket(self.guild_id, ticket)
+        await send_ticket_log(interaction.guild, ticket, settings.get("log_channel_id"))
+        await interaction.response.send_message(f"Ticket **{ticket['ticket_id']}** submitted. Staff can review it now.", ephemeral=True)
 
 
 def select_emoji_value(value):
@@ -504,12 +581,21 @@ async def on_interaction(interaction: discord.Interaction):
     custom_id = str(data.get("custom_id", ""))
     is_role_interaction = custom_id.startswith("role_select:") or custom_id.startswith("role_button:")
     is_onboarding_interaction = custom_id.startswith("onboarding_language:") or custom_id.startswith("onboarding_agree:")
-    if not (is_role_interaction or is_onboarding_interaction):
+    is_ticket_interaction = custom_id.startswith("ticket_open:")
+    if not (is_role_interaction or is_onboarding_interaction or is_ticket_interaction):
         return
 
     try:
         if not interaction.guild:
             await interaction.response.send_message("This action only works inside a server.", ephemeral=True)
+            return
+
+        if custom_id.startswith("ticket_open:"):
+            guild_id = custom_id.split(":", 1)[1]
+            if str(interaction.guild.id) != str(guild_id):
+                await interaction.response.send_message("This ticket panel belongs to another server.", ephemeral=True)
+                return
+            await interaction.response.send_modal(TicketModal(guild_id))
             return
 
         await interaction.response.defer(ephemeral=True)

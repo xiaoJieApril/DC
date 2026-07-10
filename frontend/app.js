@@ -10,6 +10,7 @@ const state = {
   savedRows: [],
   auditRows: [],
   moderation: { settings: null, cases: [] },
+  tickets: { settings: null, tickets: [] },
   onboarding: null,
   editingMessage: null,
   editingRolePanel: null,
@@ -28,6 +29,7 @@ const latestUpdates = [
   "Role/member mention tokens are inserted automatically.",
   "Message preview now shows mention chips.",
   "Moderation cases can track warnings, probation, timeouts, and appeals.",
+  "Ticket intake lets members privately submit staff requests from Discord.",
 ];
 let memberSearchTimer = null;
 
@@ -92,7 +94,7 @@ function fillSelectMessage(select, message) {
 }
 
 function fillColors() {
-  ["msgColor", "rrColor", "obPanelColor", "obRulesColor"].forEach((id) => {
+  ["msgColor", "rrColor", "obPanelColor", "obRulesColor", "ticketPanelColor"].forEach((id) => {
     if (!$(id)) return;
     fillSelect($(id), colors, (item) => item, (item) => item);
   });
@@ -141,6 +143,11 @@ async function ensureModerationLoaded() {
   try {
     if (!state.guilds.length) {
       await loadGuilds();
+    }
+    if (!state.guilds.length) {
+      fillSelectMessage($("modGuild"), "Server list unavailable");
+      setModerationStatus("Server list unavailable. Use Refresh after the bot/API can read guilds.");
+      setTicketStatus("Ticket list unavailable until a server is loaded.");
       return;
     }
     if (!$("modGuild").options.length) {
@@ -148,7 +155,8 @@ async function ensureModerationLoaded() {
     }
     await refreshModerationControls();
   } catch (err) {
-    $("modCaseList").innerHTML = `<p class="muted">Could not load moderation cases: ${escapeHtml(err.message)}</p>`;
+    setModerationStatus(`Could not load moderation data: ${err.message}`);
+    setTicketStatus(`Could not load ticket data: ${err.message}`);
   }
 }
 
@@ -291,6 +299,8 @@ async function loadGuilds() {
     fillSelectMessage($("rrGuild"), "Server list unavailable");
     fillSelectMessage($("obGuild"), "Server list unavailable");
     fillSelectMessage($("modGuild"), "Server list unavailable");
+    setModerationStatus("Server list unavailable. Check the dashboard API connection and try again.");
+    setTicketStatus("Ticket settings unavailable until the server list loads.");
     toast(`Server list unavailable: ${err.message}`);
     return;
   }
@@ -480,13 +490,28 @@ async function applyServerRulesDefaults() {
 async function loadModerationRolesAndChannels() {
   const guildId = $("modGuild").value;
   if (!guildId) return;
-  const [channels, roles] = await Promise.all([
-    api(`/api/discord/guilds/${guildId}/channels`),
-    api(`/api/discord/guilds/${guildId}/roles`),
-  ]);
+  setModerationStatus("Loading moderation selectors...");
+  setTicketStatus("Loading ticket selectors...");
+  let channels = [];
+  let roles = [];
+  try {
+    [channels, roles] = await Promise.all([
+      api(`/api/discord/guilds/${guildId}/channels`),
+      api(`/api/discord/guilds/${guildId}/roles`),
+    ]);
+  } catch (err) {
+    fillSelectMessage($("modLogChannel"), "Channel list unavailable");
+    fillSelectMessage($("ticketChannel"), "Channel list unavailable");
+    fillSelectMessage($("ticketLogChannel"), "Channel list unavailable");
+    fillSelectMessage($("modProbationRole"), "Role list unavailable");
+    fillSelectMessage($("modRemoveRole"), "Role list unavailable");
+    throw err;
+  }
   state.channels[guildId] = channels;
   state.roles[guildId] = roles.sort((a, b) => (b.position || 0) - (a.position || 0));
   fillSelect($("modLogChannel"), [{ id: "", name: "No log channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
+  fillSelect($("ticketChannel"), [{ id: "", name: "Choose ticket channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
+  fillSelect($("ticketLogChannel"), [{ id: "", name: "Use moderation log / choose channel" }, ...channels], (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
   const roleRows = [{ id: "", name: "Choose role" }, ...state.roles[guildId]];
   fillSelect($("modProbationRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
   fillSelect($("modRemoveRole"), roleRows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
@@ -494,12 +519,13 @@ async function loadModerationRolesAndChannels() {
 
 async function refreshModerationControls() {
   await loadModerationRolesAndChannels();
-  await loadModeration();
+  await Promise.all([loadModeration(), loadTickets()]);
 }
 
 async function loadModeration() {
   const guildId = $("modGuild").value;
   if (!guildId) return;
+  setModerationStatus("Loading moderation cases...");
   const data = await api(`/api/moderation/${guildId}?limit=80`);
   state.moderation = data;
   const settings = data.settings || {};
@@ -510,6 +536,17 @@ async function loadModeration() {
     $("modProbationRole").value = settings.probation_role_id || "";
   }
   renderModerationCases(data.cases || []);
+}
+
+function setModerationStatus(message) {
+  const list = $("modCaseList");
+  if (list) list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+}
+
+function setTicketStatus(message) {
+  const list = $("ticketList");
+  if (list) list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+  if ($("ticketInfo")) $("ticketInfo").textContent = message;
 }
 
 function renderModerationCases(rows) {
@@ -588,6 +625,108 @@ async function resolveModerationCase(caseId) {
   });
   toast(`Case ${updated.case_id} resolved.`);
   await loadModeration();
+  await loadAuditLogs();
+}
+
+function applyTicketSettings(settings = {}) {
+  state.tickets.settings = settings;
+  $("ticketPanelTitle").value = settings.panel_title || "Need help?";
+  $("ticketPanelDescription").value = settings.panel_description || "Open a private ticket for staff review. Your message will be visible to staff only.";
+  $("ticketButtonLabel").value = settings.button_label || "Open Ticket";
+  $("ticketPanelColor").value = settings.panel_color || "Blurple";
+  if ([...$("ticketChannel").options].some((option) => option.value === settings.ticket_channel_id)) {
+    $("ticketChannel").value = settings.ticket_channel_id || "";
+  }
+  if ([...$("ticketLogChannel").options].some((option) => option.value === settings.log_channel_id)) {
+    $("ticketLogChannel").value = settings.log_channel_id || "";
+  }
+  $("ticketInfo").textContent = settings.panel_message_id
+    ? `Ticket panel message: ${settings.panel_message_id}`
+    : "Publish a public ticket entry. Ticket content is only sent to staff log and dashboard.";
+}
+
+function collectTicketSettings() {
+  return {
+    ticket_channel_id: $("ticketChannel").value,
+    log_channel_id: $("ticketLogChannel").value || $("modLogChannel").value,
+    panel_message_id: state.tickets.settings?.panel_message_id || "",
+    panel_title: $("ticketPanelTitle").value,
+    panel_description: $("ticketPanelDescription").value,
+    button_label: $("ticketButtonLabel").value,
+    panel_color: $("ticketPanelColor").value,
+  };
+}
+
+async function loadTickets() {
+  const guildId = $("modGuild").value;
+  if (!guildId) return;
+  setTicketStatus("Loading tickets...");
+  const data = await api(`/api/tickets/${guildId}?limit=80`);
+  state.tickets = data;
+  applyTicketSettings(data.settings || {});
+  renderTickets(data.tickets || []);
+}
+
+function renderTickets(rows) {
+  const list = $("ticketList");
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = '<p class="muted">No tickets yet.</p>';
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    const channel = row.channel_id ? `#${row.channel_id}` : "Unknown channel";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(row.ticket_id || "TICKET")} · ${escapeHtml(row.status || "open")} · ${escapeHtml(row.subject || "")}</strong>
+        <div class="saved-meta">${escapeHtml(row.user_display || row.user_id || "")} (${escapeHtml(row.user_id || "")}) · ${escapeHtml(channel)} · ${escapeHtml(when)}</div>
+        <div class="saved-meta">${escapeHtml(row.content || "")}</div>
+      </div>
+      <div class="actions compact">
+        <button class="secondary" data-status="resolved">Resolve</button>
+        <button class="secondary" data-status="rejected">Reject</button>
+        <button class="secondary" data-status="escalated">Escalate</button>
+      </div>
+    `;
+    item.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => updateTicketStatus(row.ticket_id, button.dataset.status));
+    });
+    list.appendChild(item);
+  });
+}
+
+async function saveTicketSettings() {
+  const guildId = $("modGuild").value;
+  const settings = await api(`/api/tickets/${guildId}/settings`, {
+    method: "PUT",
+    body: JSON.stringify(collectTicketSettings()),
+  });
+  applyTicketSettings(settings);
+  toast("Ticket settings saved.");
+  await loadAuditLogs();
+}
+
+async function publishTicketPanel() {
+  await saveTicketSettings();
+  const guildId = $("modGuild").value;
+  const result = await api(`/api/tickets/${guildId}/publish`, { method: "POST" });
+  applyTicketSettings(result.settings || {});
+  toast(`Ticket panel published: ${result.message_id}`);
+  await loadAuditLogs();
+}
+
+async function updateTicketStatus(ticketId, status) {
+  if (!ticketId) return;
+  const guildId = $("modGuild").value;
+  const updated = await api(`/api/tickets/${guildId}/${ticketId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, notes: `Marked ${status} from dashboard.` }),
+  });
+  toast(`Ticket ${updated.ticket_id} marked ${updated.status}.`);
+  await loadTickets();
   await loadAuditLogs();
 }
 
@@ -1188,8 +1327,11 @@ function wireEvents() {
     await runAction("Load moderation server", refreshModerationControls);
   });
   $("saveModSettingsBtn").addEventListener("click", () => runAction("Save moderation settings", saveModerationSettings));
-  $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", loadModeration));
+  $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", refreshModerationControls));
   $("createModCaseBtn").addEventListener("click", () => runAction("Create moderation case", createModerationCase));
+  $("saveTicketSettingsBtn").addEventListener("click", () => runAction("Save ticket settings", saveTicketSettings));
+  $("publishTicketPanelBtn").addEventListener("click", () => runAction("Publish ticket panel", publishTicketPanel));
+  $("refreshTicketsBtn").addEventListener("click", () => runAction("Refresh tickets", loadTickets));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
     const result = await api("/api/messages", {

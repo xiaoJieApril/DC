@@ -228,10 +228,10 @@
           </div>
         </section>
 
-        <!-- Moderation: staff-created cases, manual actions, and appeal status tracking. -->
+        <!-- Moderation: staff-created cases, manual actions, ticket intake, and appeal status tracking. -->
         <section id="moderation" class="view hidden">
           <div class="panel">
-            <h2>Moderation Cases</h2>
+            <h2>Settings</h2>
             <div class="grid three">
               <label>Server<select id="modGuild"></select></label>
               <label>Log Channel<select id="modLogChannel"></select></label>
@@ -241,6 +241,9 @@
               <button id="saveModSettingsBtn" class="secondary">Save Moderation Settings</button>
               <button id="refreshModBtn" class="secondary">Refresh Cases</button>
             </div>
+          </div>
+          <div class="panel">
+            <h2>Create Case</h2>
             <div class="grid three">
               <label>Target User ID<input id="modTargetId" placeholder="Discord user ID" /></label>
               <label>Target Display<input id="modTargetDisplay" placeholder="Optional display name" /></label>
@@ -262,6 +265,27 @@
           <div class="panel">
             <h2>Case Log</h2>
             <div id="modCaseList" class="audit-list"></div>
+          </div>
+          <div class="panel">
+            <h2>Ticket Intake</h2>
+            <div class="grid three">
+              <label>Ticket Channel<select id="ticketChannel"></select></label>
+              <label>Staff Log Channel<select id="ticketLogChannel"></select></label>
+              <label>Panel Color<select id="ticketPanelColor"></select></label>
+              <label>Panel Title<input id="ticketPanelTitle" placeholder="Need help?" /></label>
+              <label>Button Label<input id="ticketButtonLabel" placeholder="Open Ticket" /></label>
+            </div>
+            <label>Panel Description<textarea id="ticketPanelDescription" rows="3" placeholder="Explain what this ticket button is for."></textarea></label>
+            <p id="ticketInfo" class="muted">Publish a public ticket entry. Ticket content is only sent to staff log and dashboard.</p>
+            <div class="actions">
+              <button id="saveTicketSettingsBtn" class="secondary">Save Ticket Settings</button>
+              <button id="publishTicketPanelBtn">Publish Ticket Panel</button>
+              <button id="refreshTicketsBtn" class="secondary">Refresh Tickets</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Tickets</h2>
+            <div id="ticketList" class="audit-list"></div>
           </div>
         </section>
 
