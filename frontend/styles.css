@@ -708,3 +708,11 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+.notice {
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border: 1px solid #d89b2b;
+  border-radius: 8px;
+  background: rgba(216, 155, 43, 0.12);
+  color: #ffd98f;
+}

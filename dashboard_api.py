@@ -12,13 +12,14 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+
+from discord_guard import DiscordGuard, DiscordGuardError
 
 from storage import (
     append_audit_log,
@@ -547,27 +548,55 @@ def token():
     return value
 
 
+discord_guard = DiscordGuard(
+    DISCORD_API,
+    token,
+    cache_file=Path(__file__).resolve().parent / "data" / "discord_cache.json",
+)
+
+
 def discord_request(method, path, payload=None):
-    headers = {
-        "Authorization": f"Bot {token()}",
-        "Content-Type": "application/json",
-    }
-    response = requests.request(
-        method,
-        f"{DISCORD_API}{path}",
-        headers=headers,
-        json=payload,
-        timeout=15,
-    )
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("message", response.text)
-        except ValueError:
-            detail = response.text
-        raise HTTPException(status_code=response.status_code, detail=detail)
-    if response.text:
-        return response.json()
-    return None
+    try:
+        result = discord_guard.request(method, path, payload)
+        # Only metadata mutations invalidate selector caches. Message/reaction/member
+        # writes do not change cached guild, channel, role, or emoji definitions.
+        if method.upper() != "GET" and re.fullmatch(r"/channels/\d+", path):
+            discord_guard.invalidate("channel:")
+            discord_guard.invalidate("channels:")
+        elif method.upper() != "GET" and re.fullmatch(r"/guilds/\d+", path):
+            discord_guard.invalidate("guilds")
+        return result
+    except DiscordGuardError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "message": exc.message,
+                "code": exc.code,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        ) from exc
+
+
+def discord_cached_get(path, cache_key, persist=True, ttl=None):
+    try:
+        return discord_guard.get(path, cache_key=cache_key, persist=persist, ttl=ttl)
+    except DiscordGuardError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "message": exc.message,
+                "code": exc.code,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        ) from exc
+
+
+def cached_emojis(guild_id):
+    return discord_cached_get(f"/guilds/{guild_id}/emojis", f"emojis:{guild_id}")["data"]
+
+
+def cached_channel(channel_id):
+    return discord_cached_get(f"/channels/{channel_id}", f"channel:{channel_id}")["data"]
 
 
 def first_non_empty_line(value):
@@ -635,7 +664,7 @@ def resolve_emoji_value(guild_id, value):
     shortcode = flag_shortcode_to_unicode(target)
     if shortcode:
         return shortcode
-    for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
+    for emoji in cached_emojis(guild_id):
         if emoji.get("name", "").lower() == target:
             return custom_emoji_value(emoji)
     return raw
@@ -652,7 +681,7 @@ def resolve_emoji_detail(guild_id, value):
         shortcode = flag_shortcode_to_unicode(target)
         if shortcode:
             return {"input": raw, "resolved": shortcode, "found": True, "kind": "unicode_shortcode", "name": target}
-        for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
+        for emoji in cached_emojis(guild_id):
             if emoji.get("name", "").lower() == target:
                 resolved = custom_emoji_value(emoji)
                 return {
@@ -972,7 +1001,7 @@ def apply_moderation_action(payload, settings):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
+    return {"ok": True, "storage": storage_name(), "bot": bot_status_payload(), "discord": discord_guard.status()}
 
 
 @app.get("/api/bot/status", dependencies=[Depends(require_admin)])
@@ -1014,26 +1043,34 @@ def me(request: Request):
 
 @app.get("/api/discord/guilds", dependencies=[Depends(require_admin)])
 def guilds():
-    return discord_request("GET", "/users/@me/guilds")
+    return discord_cached_get("/users/@me/guilds", "guilds")
 
 
 @app.get("/api/discord/guilds/{guild_id}/channels", dependencies=[Depends(require_admin)])
 def channels(guild_id: str):
-    data = discord_request("GET", f"/guilds/{guild_id}/channels")
-    return [item for item in data if item.get("type") in (0, 5)]
+    result = discord_cached_get(f"/guilds/{guild_id}/channels", f"channels:{guild_id}")
+    result["data"] = [item for item in result["data"] if item.get("type") in (0, 5)]
+    return result
 
 
 @app.get("/api/discord/guilds/{guild_id}/roles", dependencies=[Depends(require_admin)])
 def roles(guild_id: str):
-    data = discord_request("GET", f"/guilds/{guild_id}/roles")
-    return [item for item in data if item.get("name") != "@everyone" and not item.get("managed")]
+    result = discord_cached_get(f"/guilds/{guild_id}/roles", f"roles:{guild_id}")
+    result["data"] = [item for item in result["data"] if item.get("name") != "@everyone" and not item.get("managed")]
+    return result
 
 
 @app.get("/api/discord/guilds/{guild_id}/members/search", dependencies=[Depends(require_admin)])
 def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=25)):
     # Search guild members for the dashboard mention picker.
     query = urllib.parse.urlencode({"query": q.strip(), "limit": limit})
-    data = discord_request("GET", f"/guilds/{guild_id}/members/search?{query}")
+    result = discord_cached_get(
+        f"/guilds/{guild_id}/members/search?{query}",
+        f"members:{guild_id}:{query}",
+        persist=False,
+        ttl=30,
+    )
+    data = result["data"]
     rows = []
     for item in data:
         user = item.get("user") or {}
@@ -1050,12 +1087,13 @@ def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int 
                 "avatar": user.get("avatar"),
             }
         )
-    return rows
+    result["data"] = rows
+    return result
 
 
 @app.get("/api/discord/guilds/{guild_id}/emojis", dependencies=[Depends(require_admin)])
 def emojis(guild_id: str):
-    return discord_request("GET", f"/guilds/{guild_id}/emojis")
+    return discord_cached_get(f"/guilds/{guild_id}/emojis", f"emojis:{guild_id}")
 
 
 @app.get("/api/discord/guilds/{guild_id}/emojis/resolve", dependencies=[Depends(require_admin)])
@@ -1122,7 +1160,7 @@ def publish_onboarding(guild_id: str):
         raise HTTPException(status_code=400, detail="Choose a rules channel")
     if not str(config.get("fan_role_id") or config.get("member_role_id") or "").isdigit():
         raise HTTPException(status_code=400, detail="Choose the fan role to assign")
-    channel = discord_request("GET", f"/channels/{channel_id}")
+    channel = cached_channel(channel_id)
     if str(channel.get("guild_id")) != str(guild_id):
         raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
 
@@ -1245,7 +1283,7 @@ def publish_ticket_panel(guild_id: str):
     channel_id = str(settings.get("ticket_channel_id") or "")
     if not channel_id.isdigit():
         raise HTTPException(status_code=400, detail="Choose a ticket channel")
-    channel = discord_request("GET", f"/channels/{channel_id}")
+    channel = cached_channel(channel_id)
     if str(channel.get("guild_id")) != str(guild_id):
         raise HTTPException(status_code=400, detail="Selected ticket channel does not belong to this server")
 
@@ -1289,7 +1327,7 @@ def send_message(payload: MessagePayload):
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    channel = discord_request("GET", f"/channels/{payload.channel_id}")
+    channel = cached_channel(payload.channel_id)
     guild_id = channel.get("guild_id", "dm")
     body = {}
     record = {
@@ -1333,7 +1371,7 @@ def create_reaction_role(payload: ReactionRolePayload):
         raise HTTPException(status_code=400, detail="Channel ID must be numeric")
     if not payload.mappings:
         raise HTTPException(status_code=400, detail="Add at least one role mapping")
-    channel = discord_request("GET", f"/channels/{payload.channel_id}")
+    channel = cached_channel(payload.channel_id)
     guild_id = channel.get("guild_id")
     if not guild_id:
         raise HTTPException(status_code=400, detail="Reaction roles must be in a server channel")

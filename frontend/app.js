@@ -16,6 +16,8 @@ const state = {
   editingRolePanel: null,
   botStatus: null,
   mentionDropdown: "",
+  discordCooldownUntil: 0,
+  discordCacheTime: "",
 };
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
@@ -32,6 +34,13 @@ const latestUpdates = [
   "Ticket intake lets members privately submit staff requests from Discord.",
 ];
 let memberSearchTimer = null;
+let guildsPromise = null;
+let initialLoadPromise = null;
+
+const discordWriteButtonIds = [
+  "sendMsgBtn", "updateMsgBtn", "postRRBtn", "updateRRBtn",
+  "publishOnboardingBtn", "createModCaseBtn", "publishTicketPanelBtn",
+];
 
 function $(id) {
   return document.getElementById(id);
@@ -64,12 +73,21 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     let detail = await response.text();
+    let payload = detail;
     try {
-      detail = (JSON.parse(detail).detail || detail).toString();
+      const parsed = JSON.parse(detail);
+      payload = parsed.detail || parsed;
     } catch (_) {
       // keep raw detail
     }
-    throw new Error(detail);
+    if (payload && typeof payload === "object") {
+      const error = new Error(payload.message || "Request failed");
+      error.code = payload.code || "request_failed";
+      error.retryAfterSeconds = Number(payload.retry_after_seconds || 0);
+      if (error.retryAfterSeconds) setDiscordCooldown(error.retryAfterSeconds);
+      throw error;
+    }
+    throw new Error(String(payload));
   }
   if (response.status === 204) return null;
   return response.json();
@@ -99,6 +117,45 @@ function fillColors() {
     fillSelect($(id), colors, (item) => item, (item) => item);
   });
 }
+
+function unwrapDiscord(result) {
+  if (!result || Array.isArray(result) || !("data" in result)) return result;
+  const retryAfter = Number(result.retry_after_seconds || 0);
+  if (retryAfter) setDiscordCooldown(retryAfter);
+  if (result.stale) {
+    state.discordCacheTime = result.cached_at || "";
+    renderDiscordProtection();
+  } else if (!retryAfter) {
+    state.discordCacheTime = "";
+    renderDiscordProtection();
+  }
+  return result.data;
+}
+
+function setDiscordCooldown(seconds) {
+  state.discordCooldownUntil = Math.max(state.discordCooldownUntil, Date.now() + Number(seconds || 0) * 1000);
+  renderDiscordProtection();
+}
+
+function renderDiscordProtection() {
+  const banner = $("discordRateLimitBanner");
+  if (!banner) return;
+  const remaining = Math.max(0, Math.ceil((state.discordCooldownUntil - Date.now()) / 1000));
+  const blocked = remaining > 0;
+  $("refreshBtn").disabled = blocked || !!initialLoadPromise;
+  discordWriteButtonIds.forEach((id) => {
+    if ($(id)) $(id).disabled = blocked;
+  });
+  if (blocked || state.discordCacheTime) {
+    const cached = state.discordCacheTime ? ` Showing cached data from ${new Date(state.discordCacheTime).toLocaleString()}.` : "";
+    banner.textContent = `Discord is temporarily limiting requests. Try again in ${remaining}s.${cached}`;
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
+setInterval(renderDiscordProtection, 1000);
 
 function setView(name) {
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
@@ -201,13 +258,23 @@ async function checkLogin() {
   }
 }
 
-async function loadInitial() {
-  fillColors();
-  $("apiBaseInput").value = state.apiBase;
-  await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
-  renderLatestUpdates();
-  renderMessagePreview();
-  renderRolePreview();
+async function loadInitial(forceDiscord = false) {
+  if (initialLoadPromise) return initialLoadPromise;
+  initialLoadPromise = (async () => {
+    fillColors();
+    $("apiBaseInput").value = state.apiBase;
+    await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(forceDiscord), loadSaved(), loadAuditLogs()]);
+    renderLatestUpdates();
+    renderMessagePreview();
+    renderRolePreview();
+  })();
+  renderDiscordProtection();
+  try {
+    await initialLoadPromise;
+  } finally {
+    initialLoadPromise = null;
+    renderDiscordProtection();
+  }
 }
 
 // Render the Latest Update panel on the overview page.
@@ -226,6 +293,7 @@ function renderLatestUpdates() {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
+    if (health.discord && health.discord.retry_after_seconds) setDiscordCooldown(health.discord.retry_after_seconds);
     $("healthBox").textContent = JSON.stringify(health, null, 2);
     document.querySelector(".stat strong").textContent = String(health.storage || "json").toUpperCase();
   } catch (err) {
@@ -290,8 +358,13 @@ async function stopBot() {
   await loadHealth();
 }
 
-async function loadGuilds() {
-  await ensureGuildsLoaded(true);
+async function loadGuilds(force = false) {
+  if (force) {
+    state.channels = {};
+    state.roles = {};
+    state.emojis = {};
+  }
+  await ensureGuildsLoaded(force);
   if (state.guilds.length) {
     await Promise.allSettled([
       loadChannels("msg"),
@@ -327,8 +400,10 @@ async function ensureGuildsLoaded(force = false) {
   ["msgGuild", "rrGuild", "obGuild", "modGuild"].forEach((id) => {
     if ($(id)) fillSelectMessage($(id), "Loading servers...");
   });
+  if (guildsPromise) return guildsPromise;
+  guildsPromise = (async () => {
   try {
-    state.guilds = await api("/api/discord/guilds");
+    state.guilds = unwrapDiscord(await api("/api/discord/guilds"));
   } catch (err) {
     state.guilds = [];
     fillSelectMessage($("msgGuild"), "Server list unavailable");
@@ -342,19 +417,25 @@ async function ensureGuildsLoaded(force = false) {
   }
   fillGuildSelectors();
   return state.guilds;
+  })();
+  try {
+    return await guildsPromise;
+  } finally {
+    guildsPromise = null;
+  }
 }
 
 async function getGuildChannels(guildId, force = false) {
   if (!guildId) return [];
   if (state.channels[guildId] && !force) return state.channels[guildId];
-  state.channels[guildId] = await api(`/api/discord/guilds/${guildId}/channels`);
+  state.channels[guildId] = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/channels`));
   return state.channels[guildId];
 }
 
 async function getGuildRoles(guildId, force = false) {
   if (!guildId) return [];
   if (state.roles[guildId] && !force) return state.roles[guildId];
-  const roles = await api(`/api/discord/guilds/${guildId}/roles`);
+  const roles = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/roles`));
   state.roles[guildId] = roles.sort((a, b) => (b.position || 0) - (a.position || 0));
   return state.roles[guildId];
 }
@@ -763,7 +844,7 @@ async function updateTicketStatus(ticketId, status) {
 async function loadEmojis() {
   const guildId = $("rrGuild").value;
   if (!guildId) return;
-  const custom = await api(`/api/discord/guilds/${guildId}/emojis`);
+  const custom = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/emojis`));
   const rows = [
     ...commonEmojis.map((emoji) => ({ label: emoji, value: emoji })),
     ...custom.map((emoji) => ({
@@ -973,7 +1054,7 @@ async function searchMembers(scope = "msg") {
     return;
   }
   try {
-    const rows = await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`);
+    const rows = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`));
     state.members[guildId] = rows;
     renderMemberMentionResults(scope, rows);
     openMentionDropdown(`${scope}-member`);
@@ -1291,7 +1372,7 @@ function wireEvents() {
     await checkLogin();
   });
 
-  $("refreshBtn").addEventListener("click", loadInitial);
+  $("refreshBtn").addEventListener("click", () => loadInitial(true));
   $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
   $("msgGuild").addEventListener("change", async () => {
