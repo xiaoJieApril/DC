@@ -36,6 +36,8 @@ const latestUpdates = [
 let memberSearchTimer = null;
 let guildsPromise = null;
 let initialLoadPromise = null;
+let guildLoadAttempted = false;
+let dashboardInitialized = false;
 
 const discordWriteButtonIds = [
   "sendMsgBtn", "updateMsgBtn", "postRRBtn", "updateRRBtn",
@@ -184,7 +186,7 @@ function setView(name) {
 async function ensureOnboardingLoaded() {
   try {
     if (!state.guilds.length) {
-      await loadGuilds();
+      await ensureGuildsLoaded();
       return;
     }
     if (!$("obGuild").options.length) {
@@ -259,7 +261,9 @@ async function checkLogin() {
 }
 
 async function loadInitial(forceDiscord = false) {
+  if (dashboardInitialized && !forceDiscord) return;
   if (initialLoadPromise) return initialLoadPromise;
+  dashboardInitialized = true;
   initialLoadPromise = (async () => {
     fillColors();
     $("apiBaseInput").value = state.apiBase;
@@ -393,14 +397,19 @@ function fillGuildSelectors() {
 }
 
 async function ensureGuildsLoaded(force = false) {
+  if (guildsPromise) return guildsPromise;
   if (state.guilds.length && !force) {
     fillGuildSelectors();
     return state.guilds;
   }
+  if (guildLoadAttempted && !force) {
+    fillGuildSelectors();
+    return state.guilds;
+  }
+  guildLoadAttempted = true;
   ["msgGuild", "rrGuild", "obGuild", "modGuild"].forEach((id) => {
     if ($(id)) fillSelectMessage($(id), "Loading servers...");
   });
-  if (guildsPromise) return guildsPromise;
   guildsPromise = (async () => {
   try {
     state.guilds = unwrapDiscord(await api("/api/discord/guilds"));
@@ -628,7 +637,7 @@ async function loadModerationRolesAndChannels(force = false) {
 }
 
 async function refreshModerationControls(force = false) {
-  if (force) await ensureGuildsLoaded(true);
+  await ensureGuildsLoaded(false);
   await loadModerationRolesAndChannels(force);
   await Promise.all([loadModeration(), loadTickets()]);
 }
