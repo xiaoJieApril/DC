@@ -9,8 +9,8 @@ const state = {
   mappings: [],
   savedRows: [],
   auditRows: [],
-  moderation: { settings: null, cases: [] },
-  tickets: { settings: null, tickets: [] },
+  moderation: { settings: null, rules: [], cases: [], counts: { active: 0, archive: 0 }, view: "active", evidence: null, editingRule: -1 },
+  tickets: { settings: null, tickets: [], counts: { active: 0, archive: 0 }, view: "active" },
   onboarding: null,
   welcome: null,
   editingMessage: null,
@@ -25,6 +25,10 @@ const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
 const commonEmojis = ["🎮", "✅", "⭐", "🔥", "💬", "🎨", "❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣"];
 // Release notes are frontend-owned for now; no storage or admin editor is needed.
 const latestUpdates = [
+  "Send Message can insert clickable Discord channel mentions.",
+  "Moderation Rules power Dashboard cases and Discord message context cases.",
+  "Discord Message Links can fill target and evidence snapshots automatically.",
+  "Resolved moderation cases and tickets now move into Archive tabs.",
   "Welcome Automation greets new members and can send one delayed rules reminder.",
   "New member language rules gate.",
   "Members can choose language and see private rules.",
@@ -730,6 +734,7 @@ async function loadModerationRolesAndChannels(force = false) {
     await fillChannelSelect("ticketLogChannel", guildId, "Use moderation log / choose channel");
     await fillRoleSelect("modProbationRole", guildId, "Choose role", force);
     await fillRoleSelect("modRemoveRole", guildId, "Choose role");
+    await fillRoleSelect("ruleRemoveRole", guildId, "Choose role");
   } catch (err) {
     throw err;
   }
@@ -745,8 +750,9 @@ async function loadModeration() {
   const guildId = $("modGuild").value;
   if (!guildId) return;
   setModerationStatus("Loading moderation cases...");
-  const data = await api(`/api/moderation/${guildId}?limit=80`);
-  state.moderation = data;
+  const view = state.moderation.view || "active";
+  const data = await api(`/api/moderation/${guildId}?limit=80&view=${view}`);
+  state.moderation = { ...state.moderation, ...data, view };
   const settings = data.settings || {};
   if ([...$("modLogChannel").options].some((option) => option.value === settings.log_channel_id)) {
     $("modLogChannel").value = settings.log_channel_id || "";
@@ -754,6 +760,12 @@ async function loadModeration() {
   if ([...$("modProbationRole").options].some((option) => option.value === settings.probation_role_id)) {
     $("modProbationRole").value = settings.probation_role_id || "";
   }
+  renderModerationRules();
+  fillCaseRuleSelect();
+  $("caseActiveCount").textContent = data.counts?.active || 0;
+  $("caseArchiveCount").textContent = data.counts?.archive || 0;
+  $("caseActiveTab").classList.toggle("secondary", view !== "active");
+  $("caseArchiveTab").classList.toggle("secondary", view !== "archive");
   renderModerationCases(data.cases || []);
 }
 
@@ -779,17 +791,177 @@ function renderModerationCases(rows) {
     const item = document.createElement("div");
     item.className = "audit-item";
     const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    const evidence = row.evidence_snapshot || {};
+    const evidenceAttachments = (evidence.attachments || []).map((attachment) => `<a href="${escapeHtml(attachment.url)}" target="_blank" rel="noopener">${escapeHtml(attachment.filename)}</a>`).join(" · ");
+    const evidenceHtml = evidence.jump_url
+      ? `<div class="saved-meta"><a href="${escapeHtml(evidence.jump_url)}" target="_blank" rel="noopener">Open evidence</a> · ${escapeHtml(evidence.content || "(no text)")}${evidenceAttachments ? `<br />Attachments: ${evidenceAttachments}` : ""}</div>`
+      : row.evidence_url ? `<div class="saved-meta"><a href="${escapeHtml(row.evidence_url)}" target="_blank" rel="noopener">Open evidence</a></div>` : "";
+    const archived = state.moderation.view === "archive";
     item.innerHTML = `
       <div>
         <strong>${escapeHtml(row.case_id || "CASE")} · ${escapeHtml(row.action || "case")} · ${escapeHtml(row.status || "open")}</strong>
-        <div class="saved-meta">Target ${escapeHtml(row.target_display || row.target_user_id || "")} · Rule ${escapeHtml(row.rule_number || "unspecified")} · ${escapeHtml(when)}</div>
+        <div class="saved-meta">Target ${escapeHtml(row.target_display || row.target_user_id || "")} · Rule ${escapeHtml(row.rule_number || "unspecified")} ${escapeHtml(row.rule_name || "")} · ${escapeHtml(when)}</div>
         <div class="saved-meta">${escapeHtml(row.reason || "")}</div>
+        ${evidenceHtml}
       </div>
-      <button class="secondary" data-case="${escapeHtml(row.case_id || "")}">Resolve</button>
+      <div class="actions compact">
+        ${archived ? '<button class="secondary" data-status="open">Reopen</button>' : '<button class="secondary" data-status="accepted">Accept</button><button class="secondary" data-status="rejected">Reject</button><button class="secondary" data-status="escalated">Escalate</button><button class="secondary" data-status="resolved">Resolve</button>'}
+      </div>
     `;
-    item.querySelector("button").addEventListener("click", () => resolveModerationCase(row.case_id));
+    item.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => updateModerationCaseStatus(row.case_id, button.dataset.status));
+    });
     list.appendChild(item);
   });
+}
+
+function resetRuleForm() {
+  state.moderation.editingRule = -1;
+  $("ruleNumber").value = "";
+  $("ruleName").value = "";
+  $("ruleReason").value = "";
+  $("ruleSeverity").value = "normal";
+  $("ruleAction").value = "warning";
+  $("ruleTimeoutMinutes").value = 0;
+  $("ruleRemoveRole").value = "";
+  $("ruleEnabled").checked = true;
+  $("addRuleBtn").textContent = "Add Rule";
+  $("cancelRuleEditBtn").classList.add("hidden");
+}
+
+function collectRuleForm(existing = {}) {
+  return {
+    rule_id: existing.rule_id || (crypto.randomUUID ? crypto.randomUUID().replaceAll("-", "") : `${Date.now()}${Math.random()}`),
+    number: $("ruleNumber").value.trim(),
+    name: $("ruleName").value.trim(),
+    reason: $("ruleReason").value.trim(),
+    severity: $("ruleSeverity").value,
+    action: $("ruleAction").value,
+    timeout_minutes: Number($("ruleTimeoutMinutes").value || 0),
+    remove_role_id: $("ruleRemoveRole").value,
+    enabled: $("ruleEnabled").checked,
+  };
+}
+
+function addOrUpdateRule() {
+  const index = state.moderation.editingRule;
+  const existing = index >= 0 ? state.moderation.rules[index] : {};
+  const rule = collectRuleForm(existing);
+  if (!rule.number || !rule.name || !rule.reason) return toast("Rule number, name, and reason are required.");
+  if (index >= 0) state.moderation.rules[index] = rule;
+  else state.moderation.rules.push(rule);
+  resetRuleForm();
+  renderModerationRules();
+  fillCaseRuleSelect();
+}
+
+function editRule(index) {
+  const rule = state.moderation.rules[index];
+  if (!rule) return;
+  state.moderation.editingRule = index;
+  $("ruleNumber").value = rule.number || "";
+  $("ruleName").value = rule.name || "";
+  $("ruleReason").value = rule.reason || "";
+  $("ruleSeverity").value = rule.severity || "normal";
+  $("ruleAction").value = rule.action || "warning";
+  $("ruleTimeoutMinutes").value = rule.timeout_minutes || 0;
+  $("ruleRemoveRole").value = rule.remove_role_id || "";
+  $("ruleEnabled").checked = !!rule.enabled;
+  $("addRuleBtn").textContent = "Update Rule";
+  $("cancelRuleEditBtn").classList.remove("hidden");
+}
+
+function moveRule(index, offset) {
+  const target = index + offset;
+  if (target < 0 || target >= state.moderation.rules.length) return;
+  [state.moderation.rules[index], state.moderation.rules[target]] = [state.moderation.rules[target], state.moderation.rules[index]];
+  renderModerationRules();
+  fillCaseRuleSelect();
+}
+
+function renderModerationRules() {
+  const list = $("ruleList");
+  list.innerHTML = "";
+  const rules = state.moderation.rules || [];
+  if (!rules.length) {
+    list.innerHTML = '<p class="muted">No moderation rules configured.</p>';
+    return;
+  }
+  rules.forEach((rule, index) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    item.innerHTML = `
+      <div><strong>${escapeHtml(rule.number)} · ${escapeHtml(rule.name)}</strong><div class="saved-meta">${escapeHtml(rule.severity)} · ${escapeHtml(rule.action)} · ${rule.enabled ? "Enabled" : "Disabled"}</div><div class="saved-meta">${escapeHtml(rule.reason)}</div></div>
+      <div class="actions compact"><button class="secondary" data-action="up">↑</button><button class="secondary" data-action="down">↓</button><button class="secondary" data-action="edit">Edit</button><button class="delete" data-action="delete">Delete</button></div>`;
+    item.querySelector('[data-action="up"]').addEventListener("click", () => moveRule(index, -1));
+    item.querySelector('[data-action="down"]').addEventListener("click", () => moveRule(index, 1));
+    item.querySelector('[data-action="edit"]').addEventListener("click", () => editRule(index));
+    item.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      state.moderation.rules.splice(index, 1);
+      resetRuleForm();
+      renderModerationRules();
+      fillCaseRuleSelect();
+    });
+    list.appendChild(item);
+  });
+}
+
+function fillCaseRuleSelect() {
+  const select = $("modRuleTemplate");
+  const current = select.value || "custom";
+  const rows = [{ rule_id: "custom", number: "", name: "Custom" }, ...(state.moderation.rules || []).filter((item) => item.enabled)];
+  fillSelect(select, rows, (item) => item.rule_id === "custom" ? "Custom" : `${item.number} · ${item.name}`, (item) => item.rule_id);
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function applyCaseRuleTemplate() {
+  const rule = (state.moderation.rules || []).find((item) => item.rule_id === $("modRuleTemplate").value);
+  if (!rule) return;
+  $("modRuleNumber").value = rule.number;
+  $("modViolationType").value = rule.name;
+  $("modSeverity").value = rule.severity;
+  $("modAction").value = rule.action;
+  $("modReason").value = rule.reason;
+  $("modTimeoutMinutes").value = rule.timeout_minutes || 0;
+  $("modRemoveRole").value = rule.remove_role_id || "";
+}
+
+async function saveModerationRules() {
+  const guildId = $("modGuild").value;
+  const result = await api(`/api/moderation/${guildId}/rules`, { method: "PUT", body: JSON.stringify({ rules: state.moderation.rules || [] }) });
+  state.moderation.rules = result.rules || [];
+  resetRuleForm();
+  renderModerationRules();
+  fillCaseRuleSelect();
+  toast("Moderation rules saved.");
+  await loadAuditLogs();
+}
+
+function renderEvidencePreview() {
+  const box = $("modEvidencePreview");
+  const evidence = state.moderation.evidence;
+  if (!evidence) {
+    box.classList.add("muted");
+    box.textContent = "No Discord evidence loaded.";
+    return;
+  }
+  box.classList.remove("muted");
+  const attachments = (evidence.attachments || []).map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.filename)}</a>`).join(" · ");
+  box.innerHTML = `<strong>${escapeHtml(evidence.author_display)} (${escapeHtml(evidence.author_id)})</strong><div class="saved-meta">${escapeHtml(evidence.created_at || "")}</div><div>${renderDiscordText(evidence.content || "(message has no text)", $("modGuild").value)}</div>${attachments ? `<div class="saved-meta">Attachments: ${attachments}</div>` : ""}`;
+}
+
+async function fetchModerationEvidence() {
+  const guildId = $("modGuild").value;
+  const result = await api(`/api/moderation/${guildId}/evidence/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ message_url: $("modEvidenceUrl").value.trim() }),
+  });
+  state.moderation.evidence = result.evidence;
+  $("modTargetId").value = result.evidence.author_id || "";
+  $("modTargetDisplay").value = result.evidence.author_display || "";
+  $("modEvidenceUrl").value = result.evidence.jump_url || $("modEvidenceUrl").value;
+  renderEvidencePreview();
+  toast(result.stale ? "Evidence loaded from cache." : "Discord evidence loaded.");
 }
 
 async function saveModerationSettings() {
@@ -807,20 +979,24 @@ async function saveModerationSettings() {
 
 async function createModerationCase() {
   const guildId = $("modGuild").value;
+  const selectedRule = (state.moderation.rules || []).find((item) => item.rule_id === $("modRuleTemplate").value);
   const result = await api("/api/moderation/cases", {
     method: "POST",
     body: JSON.stringify({
       guild_id: guildId,
       target_user_id: $("modTargetId").value.trim(),
       target_display: $("modTargetDisplay").value.trim(),
+      rule_id: selectedRule?.rule_id || "",
+      rule_name: selectedRule?.name || $("modViolationType").value.trim(),
       rule_number: $("modRuleNumber").value.trim(),
       violation_type: $("modViolationType").value.trim(),
       severity: $("modSeverity").value,
       action: $("modAction").value,
       reason: $("modReason").value.trim(),
       evidence_url: $("modEvidenceUrl").value.trim(),
+      evidence_snapshot: state.moderation.evidence || {},
       notes: $("modNotes").value.trim(),
-      status: $("modStatus").value,
+      status: "open",
       probation_role_id: $("modProbationRole").value,
       remove_role_id: $("modRemoveRole").value,
       timeout_minutes: Number($("modTimeoutMinutes").value || 0),
@@ -831,18 +1007,21 @@ async function createModerationCase() {
   ["modTargetId", "modTargetDisplay", "modRuleNumber", "modViolationType", "modReason", "modEvidenceUrl", "modNotes"].forEach((id) => {
     $(id).value = "";
   });
+  state.moderation.evidence = null;
+  $("modRuleTemplate").value = "custom";
+  renderEvidencePreview();
   await loadModeration();
   await loadAuditLogs();
 }
 
-async function resolveModerationCase(caseId) {
+async function updateModerationCaseStatus(caseId, status) {
   if (!caseId) return;
   const guildId = $("modGuild").value;
   const updated = await api(`/api/moderation/${guildId}/cases/${caseId}`, {
     method: "PATCH",
-    body: JSON.stringify({ status: "resolved", notes: "Resolved from dashboard." }),
+    body: JSON.stringify({ status, notes: `Marked ${status} from dashboard.` }),
   });
-  toast(`Case ${updated.case_id} resolved.`);
+  toast(`Case ${updated.case_id} marked ${updated.status}.`);
   await loadModeration();
   await loadAuditLogs();
 }
@@ -880,9 +1059,14 @@ async function loadTickets() {
   const guildId = $("modGuild").value;
   if (!guildId) return;
   setTicketStatus("Loading tickets...");
-  const data = await api(`/api/tickets/${guildId}?limit=80`);
-  state.tickets = data;
+  const view = state.tickets.view || "active";
+  const data = await api(`/api/tickets/${guildId}?limit=80&view=${view}`);
+  state.tickets = { ...state.tickets, ...data, view };
   applyTicketSettings(data.settings || {});
+  $("ticketActiveCount").textContent = data.counts?.active || 0;
+  $("ticketArchiveCount").textContent = data.counts?.archive || 0;
+  $("ticketActiveTab").classList.toggle("secondary", view !== "active");
+  $("ticketArchiveTab").classList.toggle("secondary", view !== "archive");
   renderTickets(data.tickets || []);
 }
 
@@ -898,6 +1082,7 @@ function renderTickets(rows) {
     item.className = "audit-item";
     const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
     const channel = row.channel_id ? `#${row.channel_id}` : "Unknown channel";
+    const archived = state.tickets.view === "archive";
     item.innerHTML = `
       <div>
         <strong>${escapeHtml(row.ticket_id || "TICKET")} · ${escapeHtml(row.status || "open")} · ${escapeHtml(row.subject || "")}</strong>
@@ -905,9 +1090,7 @@ function renderTickets(rows) {
         <div class="saved-meta">${escapeHtml(row.content || "")}</div>
       </div>
       <div class="actions compact">
-        <button class="secondary" data-status="resolved">Resolve</button>
-        <button class="secondary" data-status="rejected">Reject</button>
-        <button class="secondary" data-status="escalated">Escalate</button>
+        ${archived ? '<button class="secondary" data-status="open">Reopen</button>' : '<button class="secondary" data-status="resolved">Resolve</button><button class="secondary" data-status="rejected">Reject</button><button class="secondary" data-status="escalated">Escalate</button>'}
       </div>
     `;
     item.querySelectorAll("button").forEach((button) => {
@@ -1018,6 +1201,8 @@ function mentionConfig(scope = "msg") {
         roleResults: "mentionRoleResults",
         memberInput: "mentionMemberSearch",
         memberResults: "mentionMemberResults",
+        channelInput: "mentionChannelSearch",
+        channelResults: "mentionChannelResults",
         textarea: "msgContent",
         render: renderMessagePreview,
       };
@@ -1036,11 +1221,17 @@ function memberMentionLabel(userId) {
   return `user ${shortId(userId)}`;
 }
 
+function channelMentionLabel(channelId, guildId = currentMessageGuildId()) {
+  const channel = (state.channels[guildId] || []).find((item) => String(item.id) === String(channelId));
+  return channel ? channel.name : `channel-${shortId(channelId)}`;
+}
+
 function renderDiscordText(value, guildId = currentMessageGuildId()) {
   // Convert saved Discord mention tokens into readable preview chips.
   const html = escapeHtml(value || "Nothing written yet.")
     .replace(/&lt;@&amp;(\d+)&gt;/g, (_, roleId) => `<span class="mention-chip">@${escapeHtml(roleMentionLabel(roleId, guildId))}</span>`)
     .replace(/&lt;@(\d+)&gt;/g, (_, userId) => `<span class="mention-chip">@${escapeHtml(memberMentionLabel(userId))}</span>`)
+    .replace(/&lt;#(\d+)&gt;/g, (_, channelId) => `<span class="mention-chip">#${escapeHtml(channelMentionLabel(channelId, guildId))}</span>`)
     .replace(/^# (.+)$/gm, '<strong class="preview-heading">$1</strong>')
     .replace(/\n/g, "<br />");
   return html;
@@ -1068,6 +1259,7 @@ function clearMentionResults(scope = "msg") {
   const config = mentionConfig(scope);
   $(config.roleInput).value = "";
   $(config.memberInput).value = "";
+  if (config.channelInput) $(config.channelInput).value = "";
   state.members[config.guildId] = [];
   closeMentionDropdowns();
 }
@@ -1077,6 +1269,7 @@ function openMentionDropdown(kind) {
   state.mentionDropdown = kind;
   $("mentionRoleResults").classList.toggle("open", kind === "msg-role");
   $("mentionMemberResults").classList.toggle("open", kind === "msg-member");
+  $("mentionChannelResults").classList.toggle("open", kind === "msg-channel");
   $("rrMentionRoleResults").classList.toggle("open", kind === "rr-role");
   $("rrMentionMemberResults").classList.toggle("open", kind === "rr-member");
 }
@@ -1085,6 +1278,7 @@ function closeMentionDropdowns() {
   state.mentionDropdown = "";
   $("mentionRoleResults").classList.remove("open");
   $("mentionMemberResults").classList.remove("open");
+  $("mentionChannelResults").classList.remove("open");
   $("rrMentionRoleResults").classList.remove("open");
   $("rrMentionMemberResults").classList.remove("open");
 }
@@ -1308,7 +1502,7 @@ async function loadSaved() {
 
 function actionLabel(row) {
   const section =
-    row.section === "messages" ? "Message" : row.section === "moderation" ? "Moderation" : "Role panel";
+    row.section === "messages" ? "Message" : row.section === "moderation" ? "Moderation" : row.section === "tickets" ? "Ticket" : row.section === "welcome_automation" ? "Welcome" : "Role panel";
   const action = {
     sent: "sent",
     posted: "posted",
@@ -1318,10 +1512,39 @@ function actionLabel(row) {
     deleted_record: "record deleted",
     created_case: "case created",
     resolved_case: "case resolved",
+    updated_case: "case status updated",
+    updated_ticket: "status updated",
+    saved_rules: "rules saved",
     saved_settings: "settings saved",
     loaded_defaults: "defaults loaded",
   }[row.action] || row.action;
   return `${section} ${action}`;
+}
+
+function renderChannelMentionResults() {
+  const config = mentionConfig("msg");
+  const list = $(config.channelResults);
+  const query = $(config.channelInput).value.trim().toLowerCase();
+  const channels = (state.channels[config.guildId] || [])
+    .filter((item) => !query || String(item.name || "").toLowerCase().includes(query))
+    .slice(0, 15);
+  list.innerHTML = "";
+  if (!channels.length) {
+    list.innerHTML = '<p class="muted compact">No matching channels.</p>';
+    return;
+  }
+  channels.forEach((channel) => {
+    const button = document.createElement("button");
+    button.className = "mention-result";
+    button.type = "button";
+    button.innerHTML = `<span>#${escapeHtml(channel.name)}</span><small>${escapeHtml(shortId(channel.id))}</small>`;
+    button.addEventListener("click", () => {
+      $(config.channelInput).value = "";
+      closeMentionDropdowns();
+      insertMentionToken(`<#${channel.id}>`, "msg");
+    });
+    list.appendChild(button);
+  });
 }
 
 async function loadAuditLogs() {
@@ -1507,6 +1730,14 @@ function wireEvents() {
     openMentionDropdown("msg-member");
     memberSearchTimer = setTimeout(searchMembers, 250);
   });
+  $("mentionChannelSearch").addEventListener("focus", () => {
+    renderChannelMentionResults();
+    openMentionDropdown("msg-channel");
+  });
+  $("mentionChannelSearch").addEventListener("input", () => {
+    renderChannelMentionResults();
+    openMentionDropdown("msg-channel");
+  });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".mention-tool")) {
       closeMentionDropdowns();
@@ -1549,8 +1780,22 @@ function wireEvents() {
   });
   $("saveWelcomeBtn").addEventListener("click", () => runAction("Save Welcome Automation", saveWelcomeAutomation));
   $("modGuild").addEventListener("change", async () => {
+    state.moderation.view = "active";
+    state.tickets.view = "active";
+    state.moderation.evidence = null;
+    resetRuleForm();
+    renderEvidencePreview();
     await runAction("Load moderation server", refreshModerationControls);
   });
+  $("addRuleBtn").addEventListener("click", addOrUpdateRule);
+  $("cancelRuleEditBtn").addEventListener("click", resetRuleForm);
+  $("saveRulesBtn").addEventListener("click", () => runAction("Save moderation rules", saveModerationRules));
+  $("modRuleTemplate").addEventListener("change", applyCaseRuleTemplate);
+  $("fetchEvidenceBtn").addEventListener("click", () => runAction("Fetch evidence", fetchModerationEvidence));
+  $("caseActiveTab").addEventListener("click", () => runAction("Load active cases", async () => { state.moderation.view = "active"; await loadModeration(); }));
+  $("caseArchiveTab").addEventListener("click", () => runAction("Load case archive", async () => { state.moderation.view = "archive"; await loadModeration(); }));
+  $("ticketActiveTab").addEventListener("click", () => runAction("Load active tickets", async () => { state.tickets.view = "active"; await loadTickets(); }));
+  $("ticketArchiveTab").addEventListener("click", () => runAction("Load ticket archive", async () => { state.tickets.view = "archive"; await loadTickets(); }));
   $("saveModSettingsBtn").addEventListener("click", () => runAction("Save moderation settings", saveModerationSettings));
   $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", () => refreshModerationControls(true)));
   $("createModCaseBtn").addEventListener("click", () => runAction("Create moderation case", createModerationCase));

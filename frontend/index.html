@@ -122,6 +122,10 @@
                 <label>Mention Member<input id="mentionMemberSearch" placeholder="Search member name" /></label>
                 <div id="mentionMemberResults" class="mention-results dropdown-menu"></div>
               </div>
+              <div class="mention-tool dropdown">
+                <label>Mention Channel<input id="mentionChannelSearch" placeholder="Search channel name" /></label>
+                <div id="mentionChannelResults" class="mention-results dropdown-menu"></div>
+              </div>
             </div>
             <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>
             <div class="preview-box">
@@ -289,8 +293,28 @@
             </div>
           </div>
           <div class="panel">
+            <h2>Moderation Rules</h2>
+            <div class="grid three">
+              <label>Rule Number<input id="ruleNumber" placeholder="1 / 6 / red line" /></label>
+              <label>Rule Name<input id="ruleName" placeholder="Spam / Privacy / NSFW" /></label>
+              <label>Severity<select id="ruleSeverity"><option value="normal">Normal</option><option value="serious">Serious</option><option value="red_line">Red Line</option></select></label>
+              <label>Default Action<select id="ruleAction"><option value="warning">Warning</option><option value="probation">Give Probation Role</option><option value="timeout">Timeout</option><option value="remove_role">Remove Role</option><option value="note">Record Only</option></select></label>
+              <label>Timeout Minutes<input id="ruleTimeoutMinutes" type="number" min="0" value="0" /></label>
+              <label>Role To Remove<select id="ruleRemoveRole"></select></label>
+            </div>
+            <label>Default Reason<textarea id="ruleReason" rows="3" placeholder="Reason copied into new cases"></textarea></label>
+            <label class="check"><input id="ruleEnabled" type="checkbox" checked /> Available in Dashboard and Discord</label>
+            <div class="actions">
+              <button id="addRuleBtn">Add Rule</button>
+              <button id="cancelRuleEditBtn" class="secondary hidden">Cancel Edit</button>
+              <button id="saveRulesBtn" class="secondary">Save Rules</button>
+            </div>
+            <div id="ruleList" class="audit-list"></div>
+          </div>
+          <div class="panel">
             <h2>Create Case</h2>
             <div class="grid three">
+              <label>Rule Template<select id="modRuleTemplate"><option value="custom">Custom</option></select></label>
               <label>Target User ID<input id="modTargetId" placeholder="Discord user ID" /></label>
               <label>Target Display<input id="modTargetDisplay" placeholder="Optional display name" /></label>
               <label>Rule Number<input id="modRuleNumber" placeholder="1 / 6 / red line" /></label>
@@ -299,10 +323,11 @@
               <label>Action<select id="modAction"><option value="warning">Warning</option><option value="probation">Give Probation Role</option><option value="timeout">Timeout</option><option value="remove_role">Remove Role</option><option value="note">Record Only</option></select></label>
               <label>Timeout Minutes<input id="modTimeoutMinutes" type="number" min="0" value="0" /></label>
               <label>Role To Remove<select id="modRemoveRole"></select></label>
-              <label>Appeal Status<select id="modStatus"><option value="open">Open</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="escalated">Escalated</option><option value="resolved">Resolved</option></select></label>
             </div>
             <label>Reason<textarea id="modReason" rows="4" placeholder="What happened?"></textarea></label>
-            <label>Evidence URL<input id="modEvidenceUrl" placeholder="Message link, screenshot URL, or ticket link" /></label>
+            <label>Evidence URL<input id="modEvidenceUrl" placeholder="Paste a Discord Message Link" /></label>
+            <div class="actions"><button id="fetchEvidenceBtn" class="secondary">Fetch Discord Message</button></div>
+            <div id="modEvidencePreview" class="discord-preview muted">No Discord evidence loaded.</div>
             <label>Notes<textarea id="modNotes" rows="3" placeholder="Internal staff notes"></textarea></label>
             <div class="actions">
               <button id="createModCaseBtn">Create Case</button>
@@ -310,6 +335,10 @@
           </div>
           <div class="panel">
             <h2>Case Log</h2>
+            <div class="actions view-tabs">
+              <button id="caseActiveTab">Active <span id="caseActiveCount">0</span></button>
+              <button id="caseArchiveTab" class="secondary">Archive <span id="caseArchiveCount">0</span></button>
+            </div>
             <div id="modCaseList" class="audit-list"></div>
           </div>
           <div class="panel">
@@ -331,6 +360,10 @@
           </div>
           <div class="panel">
             <h2>Tickets</h2>
+            <div class="actions view-tabs">
+              <button id="ticketActiveTab">Active <span id="ticketActiveCount">0</span></button>
+              <button id="ticketArchiveTab" class="secondary">Archive <span id="ticketArchiveCount">0</span></button>
+            </div>
             <div id="ticketList" class="audit-list"></div>
           </div>
         </section>
@@ -360,7 +393,7 @@
     </main>
 
     <div id="toast" class="toast hidden"></div>
-    <script src="./config.js?v=20260714-welcome-automation"></script>
-    <script src="./app.js?v=20260714-welcome-automation"></script>
+    <script src="./config.js?v=20260714-moderation-rules"></script>
+    <script src="./app.js?v=20260714-moderation-rules"></script>
   </body>
 </html>

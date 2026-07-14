@@ -29,6 +29,7 @@ from storage import (
     load_config,
     save_config,
     set_moderation_settings,
+    set_moderation_rules,
     set_ticket_settings,
     storage_name,
     update_moderation_case,
@@ -38,6 +39,15 @@ from storage import (
     upsert_onboarding,
     upsert_reaction_role,
     upsert_welcome_automation,
+)
+from moderation_tools import (
+    evidence_snapshot_from_api,
+    filter_status_view,
+    normalize_moderation_rules,
+    parse_discord_message_url,
+    status_counts,
+    status_update,
+    validate_moderation_rules,
 )
 from welcome_automation import (
     normalize_welcome_config,
@@ -329,16 +339,39 @@ class ModerationSettingsPayload(BaseModel):
     log_channel_id: str = ""
 
 
+class ModerationRulePayload(BaseModel):
+    rule_id: str = ""
+    number: str = ""
+    name: str = ""
+    reason: str = ""
+    severity: str = "normal"
+    action: str = "warning"
+    timeout_minutes: int = 0
+    remove_role_id: str = ""
+    enabled: bool = True
+
+
+class ModerationRulesPayload(BaseModel):
+    rules: list[ModerationRulePayload] = Field(default_factory=list)
+
+
+class EvidenceResolvePayload(BaseModel):
+    message_url: str
+
+
 class ModerationCasePayload(BaseModel):
     guild_id: str
     target_user_id: str
     target_display: str = ""
+    rule_id: str = ""
+    rule_name: str = ""
     rule_number: str = ""
     violation_type: str = ""
     severity: str = "normal"
     action: str = "warning"
     reason: str
     evidence_url: str = ""
+    evidence_snapshot: dict = Field(default_factory=dict)
     notes: str = ""
     status: str = "open"
     probation_role_id: str = ""
@@ -927,6 +960,12 @@ def moderation_case_embed(case):
     ]
     if case.get("evidence_url"):
         lines.append(f"Evidence: {case['evidence_url']}")
+    evidence_content = str((case.get("evidence_snapshot") or {}).get("content") or "").strip()
+    if evidence_content:
+        lines.extend(["", "Evidence snapshot:", evidence_content[:1000]])
+    evidence_attachments = (case.get("evidence_snapshot") or {}).get("attachments") or []
+    if evidence_attachments:
+        lines.append("Attachments: " + " · ".join(str(item.get("url") or "") for item in evidence_attachments[:5]))
     if case.get("notes"):
         lines.append(f"Notes: {case['notes']}")
     return {
@@ -1247,11 +1286,19 @@ def save_welcome_automation(guild_id: str, payload: WelcomeAutomationPayload):
 
 
 @app.get("/api/moderation/{guild_id}", dependencies=[Depends(require_admin)])
-def get_moderation(guild_id: str, limit: int = Query(50, ge=1, le=100)):
+def get_moderation(
+    guild_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    view: str = Query("active", pattern="^(active|archive|all)$"),
+):
     config = load_config()
+    all_cases = config.get("moderation_cases", {}).get(str(guild_id), [])
     return {
         "settings": normalize_moderation_settings(config.get("moderation_settings", {}).get(str(guild_id), {})),
-        "cases": config.get("moderation_cases", {}).get(str(guild_id), [])[:limit],
+        "rules": normalize_moderation_rules(config.get("moderation_rules", {}).get(str(guild_id), [])),
+        "cases": filter_status_view(all_cases, view, "case")[:limit],
+        "counts": status_counts(all_cases, "case"),
+        "view": view,
     }
 
 
@@ -1263,6 +1310,44 @@ def save_moderation_settings(guild_id: str, payload: ModerationSettingsPayload):
     return settings
 
 
+@app.get("/api/moderation/{guild_id}/rules", dependencies=[Depends(require_admin)])
+def get_moderation_rules(guild_id: str):
+    config = load_config()
+    return {"rules": normalize_moderation_rules(config.get("moderation_rules", {}).get(str(guild_id), []))}
+
+
+@app.put("/api/moderation/{guild_id}/rules", dependencies=[Depends(require_admin)])
+def save_moderation_rules(guild_id: str, payload: ModerationRulesPayload):
+    rules = normalize_moderation_rules([model_to_dict(item) for item in payload.rules])
+    try:
+        validate_moderation_rules(rules)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    set_moderation_rules(guild_id, rules)
+    append_audit_log("saved_rules", "moderation", guild_id, "", {"count": len(rules)}, request_actor())
+    return {"rules": rules}
+
+
+@app.post("/api/moderation/{guild_id}/evidence/resolve", dependencies=[Depends(require_admin)])
+def resolve_moderation_evidence(guild_id: str, payload: EvidenceResolvePayload):
+    try:
+        ids = parse_discord_message_url(payload.message_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if ids["guild_id"] != str(guild_id):
+        raise HTTPException(status_code=400, detail="The message belongs to another server")
+    result = discord_cached_get(
+        f"/channels/{ids['channel_id']}/messages/{ids['message_id']}",
+        f"message:{ids['guild_id']}:{ids['channel_id']}:{ids['message_id']}",
+        persist=False,
+        ttl=30,
+    )
+    snapshot = evidence_snapshot_from_api(result["data"], ids["guild_id"], ids["channel_id"])
+    if not snapshot["author_id"]:
+        raise HTTPException(status_code=400, detail="The Discord message has no author")
+    return {"evidence": snapshot, "stale": bool(result.get("stale")), "cached_at": result.get("cached_at")}
+
+
 @app.post("/api/moderation/cases", dependencies=[Depends(require_admin)])
 def create_moderation_case(payload: ModerationCasePayload):
     if not str(payload.guild_id).isdigit():
@@ -1272,6 +1357,16 @@ def create_moderation_case(payload: ModerationCasePayload):
     if not payload.reason.strip():
         raise HTTPException(status_code=400, detail="Reason is required")
     config = load_config()
+    rules = normalize_moderation_rules(config.get("moderation_rules", {}).get(str(payload.guild_id), []))
+    selected_rule = next((item for item in rules if item["rule_id"] == payload.rule_id), None) if payload.rule_id else None
+    if payload.rule_id and not selected_rule:
+        raise HTTPException(status_code=400, detail="The selected moderation rule no longer exists")
+    evidence = dict(payload.evidence_snapshot or {})
+    if evidence:
+        if str(evidence.get("guild_id") or "") != str(payload.guild_id):
+            raise HTTPException(status_code=400, detail="Evidence belongs to another server")
+        if str(evidence.get("author_id") or "") != str(payload.target_user_id):
+            raise HTTPException(status_code=400, detail="Evidence author does not match the target user")
     settings = normalize_moderation_settings(config.get("moderation_settings", {}).get(str(payload.guild_id), {}))
     action = apply_moderation_action(payload, settings)
     case = {
@@ -1279,14 +1374,28 @@ def create_moderation_case(payload: ModerationCasePayload):
         "guild_id": str(payload.guild_id),
         "target_user_id": str(payload.target_user_id),
         "target_display": payload.target_display.strip(),
+        "rule_id": payload.rule_id.strip(),
+        "rule_name": payload.rule_name.strip(),
+        "rule_snapshot": {
+            "rule_id": payload.rule_id.strip(),
+            "number": payload.rule_number.strip(),
+            "name": payload.rule_name.strip() or payload.violation_type.strip(),
+            "reason": payload.reason.strip(),
+            "severity": payload.severity,
+            "action": action,
+            "timeout_minutes": int(payload.timeout_minutes or 0),
+            "remove_role_id": str(payload.remove_role_id or ""),
+        } if payload.rule_id else {},
         "rule_number": payload.rule_number.strip(),
         "violation_type": payload.violation_type.strip(),
         "severity": payload.severity if payload.severity in ("normal", "serious", "red_line") else "normal",
         "action": action,
         "reason": payload.reason.strip(),
-        "evidence_url": payload.evidence_url.strip(),
+        "evidence_url": str(evidence.get("jump_url") or payload.evidence_url).strip(),
+        "evidence_snapshot": evidence,
         "notes": payload.notes.strip(),
-        "status": payload.status if payload.status in ("open", "accepted", "rejected", "escalated", "resolved") else "open",
+        "status": "open",
+        "status_history": [],
         "actor": request_actor(),
         "ts": int(time.time()),
     }
@@ -1301,23 +1410,37 @@ def create_moderation_case(payload: ModerationCasePayload):
 @app.patch("/api/moderation/{guild_id}/cases/{case_id}", dependencies=[Depends(require_admin)])
 def resolve_moderation_case(guild_id: str, case_id: str, payload: ModerationResolvePayload):
     status = payload.status if payload.status in ("open", "accepted", "rejected", "escalated", "resolved") else "resolved"
+    config = load_config()
+    existing = next(
+        (item for item in config.get("moderation_cases", {}).get(str(guild_id), []) if str(item.get("case_id")) == str(case_id)),
+        None,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Moderation case not found")
     updated = update_moderation_case(
         guild_id,
         case_id,
-        {"status": status, "resolution_notes": payload.notes.strip(), "resolved_ts": int(time.time()), "resolved_by": request_actor()},
+        status_update(existing, status, request_actor(), payload.notes.strip()),
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Moderation case not found")
-    append_audit_log("resolved_case", "moderation", guild_id, case_id, {"status": status}, request_actor())
+    append_audit_log("updated_case", "moderation", guild_id, case_id, {"status": status}, request_actor())
     return updated
 
 
 @app.get("/api/tickets/{guild_id}", dependencies=[Depends(require_admin)])
-def get_tickets(guild_id: str, limit: int = Query(50, ge=1, le=100)):
+def get_tickets(
+    guild_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    view: str = Query("active", pattern="^(active|archive|all)$"),
+):
     config = load_config()
+    all_tickets = config.get("tickets", {}).get(str(guild_id), [])
     return {
         "settings": normalize_ticket_settings(config.get("ticket_settings", {}).get(str(guild_id), {})),
-        "tickets": config.get("tickets", {}).get(str(guild_id), [])[:limit],
+        "tickets": filter_status_view(all_tickets, view, "ticket")[:limit],
+        "counts": status_counts(all_tickets, "ticket"),
+        "view": view,
     }
 
 
@@ -1365,10 +1488,17 @@ def publish_ticket_panel(guild_id: str):
 @app.patch("/api/tickets/{guild_id}/{ticket_id}", dependencies=[Depends(require_admin)])
 def update_ticket_status(guild_id: str, ticket_id: str, payload: TicketStatusPayload):
     status = payload.status if payload.status in ("open", "resolved", "rejected", "escalated") else "resolved"
+    config = load_config()
+    existing = next(
+        (item for item in config.get("tickets", {}).get(str(guild_id), []) if str(item.get("ticket_id")) == str(ticket_id)),
+        None,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Ticket not found")
     updated = update_ticket(
         guild_id,
         ticket_id,
-        {"status": status, "resolution_notes": payload.notes.strip(), "updated_ts": int(time.time()), "updated_by": request_actor()},
+        status_update(existing, status, request_actor(), payload.notes.strip(), kind="ticket"),
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Ticket not found")

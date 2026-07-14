@@ -20,6 +20,8 @@ DEFAULT_CONFIG = {
     "welcome_jobs": [],
     "moderation_cases": {},
     "moderation_settings": {},
+    "moderation_rules": {},
+    "moderation_drafts": {},
     "tickets": {},
     "ticket_settings": {},
     "audit_logs": [],
@@ -49,6 +51,8 @@ def normalize_config(data):
         "welcome_jobs": data.get("welcome_jobs", []) if isinstance(data.get("welcome_jobs", []), list) else [],
         "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
         "moderation_settings": data.get("moderation_settings", {}) if isinstance(data.get("moderation_settings", {}), dict) else {},
+        "moderation_rules": data.get("moderation_rules", {}) if isinstance(data.get("moderation_rules", {}), dict) else {},
+        "moderation_drafts": data.get("moderation_drafts", {}) if isinstance(data.get("moderation_drafts", {}), dict) else {},
         "tickets": data.get("tickets", {}) if isinstance(data.get("tickets", {}), dict) else {},
         "ticket_settings": data.get("ticket_settings", {}) if isinstance(data.get("ticket_settings", {}), dict) else {},
         "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
@@ -222,6 +226,55 @@ def set_moderation_settings(guild_id, payload):
         config = _load_config_unlocked()
         config.setdefault("moderation_settings", {})[str(guild_id)] = dict(payload)
         _save_config_unlocked(config)
+
+
+def set_moderation_rules(guild_id, rules):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("moderation_rules", {})[str(guild_id)] = [dict(item) for item in rules]
+        _save_config_unlocked(config)
+
+
+def save_moderation_draft(draft_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        drafts = config.setdefault("moderation_drafts", {})
+        now = time.time()
+        for key in [key for key, item in drafts.items() if float(item.get("expires_at") or 0) < now]:
+            drafts.pop(key, None)
+        drafts[str(draft_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def get_moderation_draft(draft_id, now=None):
+    config = load_config()
+    draft = config.get("moderation_drafts", {}).get(str(draft_id))
+    if not draft:
+        return None
+    if now is not None and float(draft.get("expires_at") or 0) < float(now):
+        delete_moderation_draft(draft_id)
+        return None
+    return draft
+
+
+def delete_moderation_draft(draft_id):
+    with config_lock():
+        config = _load_config_unlocked()
+        removed = config.setdefault("moderation_drafts", {}).pop(str(draft_id), None)
+        if removed is not None:
+            _save_config_unlocked(config)
+        return removed
+
+
+def claim_moderation_draft(draft_id, now):
+    with config_lock():
+        config = _load_config_unlocked()
+        draft = config.setdefault("moderation_drafts", {}).get(str(draft_id))
+        if not draft or float(draft.get("expires_at") or 0) < float(now) or draft.get("status") != "pending":
+            return None
+        draft["status"] = "processing"
+        _save_config_unlocked(config)
+        return deepcopy(draft)
 
 
 def append_moderation_case(guild_id, payload):

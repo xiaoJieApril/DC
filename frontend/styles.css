@@ -322,7 +322,7 @@ pre {
 
 .language-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 14px;
   margin: 10px 0 16px;
 }
@@ -435,9 +435,9 @@ pre {
 }
 
 .mention-tools {
-  /* Searchable role/member mention pickers above the message editor. */
+  /* Searchable role/member/channel mention pickers above the message editor. */
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin: 6px 0 16px;
 }
@@ -707,6 +707,10 @@ pre {
   .mention-tools {
     grid-template-columns: 1fr;
   }
+}
+
+#modEvidencePreview {
+  margin: 10px 0 16px;
 }
 .notice {
   margin: 0 0 18px;

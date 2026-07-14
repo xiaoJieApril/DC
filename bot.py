@@ -1,4 +1,5 @@
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -9,16 +10,21 @@ from storage import (
     append_audit_log,
     append_moderation_case,
     append_ticket,
+    claim_moderation_draft,
     claim_due_welcome_jobs,
     enqueue_welcome_job,
+    delete_moderation_draft,
     finish_welcome_job,
+    get_moderation_draft,
     init_db,
     load_config,
     retry_welcome_job,
+    save_moderation_draft,
     save_config,
     update_moderation_case,
     upsert_message,
 )
+from moderation_tools import evidence_snapshot_from_message, normalize_moderation_rules
 from welcome_automation import build_follow_up_job, follow_up_delay_seconds, normalize_welcome_config, render_welcome_template
 
 load_dotenv()
@@ -294,9 +300,13 @@ def create_moderation_case(ctx, member, action, reason, rule_number="", severity
 
 
 async def send_moderation_case_log(ctx, case):
-    settings = load_config().get("moderation_settings", {}).get(str(ctx.guild.id), {})
+    await send_moderation_case_log_for_guild(ctx.guild, case)
+
+
+async def send_moderation_case_log_for_guild(guild, case):
+    settings = load_config().get("moderation_settings", {}).get(str(guild.id), {})
     channel_id = str(settings.get("log_channel_id") or "")
-    channel = ctx.guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
     if not channel:
         return
     embed = discord.Embed(
@@ -320,6 +330,174 @@ async def send_moderation_case_log(ctx, case):
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException as exc:
         print(f"[MOD] Could not send moderation log: {exc}")
+
+
+async def apply_bot_moderation_action(guild, member, rule):
+    action = rule.get("action") or "warning"
+    reason = f"Rule {rule.get('number')}: {rule.get('name')}"
+    settings = load_config().get("moderation_settings", {}).get(str(guild.id), {})
+    if action == "probation":
+        role_id = str(settings.get("probation_role_id") or "")
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if not role:
+            raise ValueError("The probation role is not configured")
+        ok, error = bot_can_manage_role(guild, role)
+        if not ok:
+            raise ValueError(error)
+        await member.add_roles(role, reason=reason)
+    elif action == "timeout":
+        minutes = int(rule.get("timeout_minutes") or 0)
+        if minutes <= 0:
+            raise ValueError("Timeout minutes are not configured")
+        await member.timeout_for(timedelta(minutes=minutes), reason=reason)
+    elif action == "remove_role":
+        role_id = str(rule.get("remove_role_id") or "")
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if not role:
+            raise ValueError("The role to remove is not available")
+        await member.remove_roles(role, reason=reason)
+    return action
+
+
+def moderation_draft_embed(draft, rule=None, confirm=False):
+    evidence = draft.get("evidence") or {}
+    description = str(evidence.get("content") or "(message has no text)")[:900]
+    lines = [
+        f"Target: <@{evidence.get('author_id')}> ({evidence.get('author_id')})",
+        f"Evidence: {evidence.get('jump_url')}",
+        "",
+        description,
+    ]
+    attachments = evidence.get("attachments") or []
+    if attachments:
+        lines.append("Attachments: " + " · ".join(f"[{item.get('filename')}]({item.get('url')})" for item in attachments[:5]))
+    if rule:
+        lines.extend([
+            "",
+            f"Rule: {rule.get('number')} · {rule.get('name')}",
+            f"Severity: {rule.get('severity')}",
+            f"Action: {rule.get('action')}",
+            f"Reason: {rule.get('reason')}",
+        ])
+    return discord.Embed(
+        title="Confirm Moderation Case" if confirm else "Choose Moderation Rule",
+        description="\n".join(lines)[:4096],
+        color=DISPLAY_COLOR_MAP["Red"] if rule and rule.get("severity") == "red_line" else DISPLAY_COLOR_MAP["Yellow"],
+    )
+
+
+class ModerationRuleSelect(discord.ui.Select):
+    def __init__(self, draft_id, rules):
+        self.draft_id = str(draft_id)
+        options = [
+            discord.SelectOption(
+                label=f"{item['number']} · {item['name']}"[:100],
+                value=item["rule_id"],
+                description=f"{item['severity']} · {item['action']}"[:100],
+            )
+            for item in rules[:25]
+        ]
+        super().__init__(placeholder="Choose a rule", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        draft = get_valid_moderation_draft(self.draft_id, interaction)
+        if not draft:
+            await interaction.response.send_message("This moderation draft expired.", ephemeral=True)
+            return
+        rules = normalize_moderation_rules(load_config().get("moderation_rules", {}).get(str(interaction.guild.id), []))
+        rule = next((item for item in rules if item.get("enabled") and item["rule_id"] == self.values[0]), None)
+        if not rule:
+            await interaction.response.send_message("That rule is no longer available.", ephemeral=True)
+            return
+        draft["selected_rule"] = rule
+        draft["status"] = "pending"
+        save_moderation_draft(self.draft_id, draft)
+        await interaction.response.edit_message(
+            embed=moderation_draft_embed(draft, rule, confirm=True),
+            view=ModerationConfirmView(self.draft_id),
+        )
+
+
+class ModerationRuleSelectView(discord.ui.View):
+    def __init__(self, draft_id, rules):
+        super().__init__(timeout=1800)
+        self.add_item(ModerationRuleSelect(draft_id, rules))
+
+
+def get_valid_moderation_draft(draft_id, interaction):
+    draft = get_moderation_draft(draft_id, time.time())
+    if not draft or draft.get("status") != "pending" or str(draft.get("moderator_id")) != str(interaction.user.id):
+        return None
+    return draft
+
+
+class ModerationConfirmView(discord.ui.View):
+    def __init__(self, draft_id):
+        super().__init__(timeout=1800)
+        self.draft_id = str(draft_id)
+
+    @discord.ui.button(label="Confirm Case", style=discord.ButtonStyle.danger)
+    async def confirm(self, button, interaction: discord.Interaction):
+        draft = get_valid_moderation_draft(self.draft_id, interaction)
+        if not draft:
+            await interaction.response.send_message("This draft expired or was already handled.", ephemeral=True)
+            return
+        claimed = claim_moderation_draft(self.draft_id, time.time())
+        if not claimed:
+            await interaction.response.send_message("This draft is already being processed.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        evidence = claimed.get("evidence") or {}
+        rule = claimed.get("selected_rule") or {}
+        member = await fetch_member(interaction.guild, int(evidence.get("author_id") or 0))
+        if not member:
+            claimed["status"] = "pending"
+            save_moderation_draft(self.draft_id, claimed)
+            await interaction.followup.send("The message author is no longer in this server.", ephemeral=True)
+            return
+        try:
+            action = await apply_bot_moderation_action(interaction.guild, member, rule)
+            config = load_config()
+            case = {
+                "case_id": next_case_id(config, interaction.guild.id),
+                "guild_id": str(interaction.guild.id),
+                "target_user_id": str(member.id),
+                "target_display": member.display_name,
+                "rule_id": rule.get("rule_id", ""),
+                "rule_name": rule.get("name", ""),
+                "rule_number": rule.get("number", ""),
+                "rule_snapshot": dict(rule),
+                "violation_type": rule.get("name", ""),
+                "severity": rule.get("severity", "normal"),
+                "action": action,
+                "reason": rule.get("reason", ""),
+                "evidence_url": evidence.get("jump_url", ""),
+                "evidence_snapshot": evidence,
+                "notes": "Created from Discord message context command.",
+                "status": "open",
+                "actor": str(interaction.user),
+                "ts": int(time.time()),
+                "status_history": [],
+            }
+            append_moderation_case(interaction.guild.id, case)
+            append_audit_log("created_case", "moderation", interaction.guild.id, case["case_id"], {"source": "discord_context", "target": str(member.id)}, str(interaction.user))
+            await send_moderation_case_log_for_guild(interaction.guild, case)
+        except (ValueError, discord.Forbidden, discord.HTTPException) as exc:
+            claimed["status"] = "pending"
+            save_moderation_draft(self.draft_id, claimed)
+            await interaction.followup.send(f"Case could not be created: {exc}", ephemeral=True)
+            return
+        delete_moderation_draft(self.draft_id)
+        await interaction.edit_original_response(content=f"Case **{case['case_id']}** created.", embed=None, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, button, interaction: discord.Interaction):
+        draft = get_valid_moderation_draft(self.draft_id, interaction)
+        if not draft:
+            await interaction.response.send_message("This draft expired or was already handled.", ephemeral=True)
+            return
+        delete_moderation_draft(self.draft_id)
+        await interaction.response.edit_message(content="Moderation case cancelled.", embed=None, view=None)
 
 
 ALLOWED_MENTIONS = discord.AllowedMentions(users=True, roles=True, everyone=False)
@@ -579,6 +757,42 @@ intents.reactions = True
 
 bot = discord.Bot(intents=intents)
 reactionrole = bot.create_group("reactionrole", "Manage reaction role messages")
+
+
+@bot.message_command(name="Create Moderation Case", guild_only=True)
+async def create_moderation_case_from_message(ctx, message: discord.Message):
+    permissions = getattr(ctx.author, "guild_permissions", None)
+    if not permissions or not (permissions.manage_messages or permissions.moderate_members):
+        await ctx.respond("You need Manage Messages or Moderate Members permission.", ephemeral=True)
+        return
+    if not message.guild or message.author.bot:
+        await ctx.respond("Only messages from server members can become moderation cases.", ephemeral=True)
+        return
+    rules = [
+        item
+        for item in normalize_moderation_rules(load_config().get("moderation_rules", {}).get(str(ctx.guild.id), []))
+        if item.get("enabled")
+    ]
+    if not rules:
+        await ctx.respond("No moderation rules are enabled. Configure rules in the dashboard first.", ephemeral=True)
+        return
+    draft_id = secrets.token_hex(8)
+    draft = {
+        "draft_id": draft_id,
+        "guild_id": str(ctx.guild.id),
+        "moderator_id": str(ctx.author.id),
+        "evidence": evidence_snapshot_from_message(message),
+        "selected_rule": {},
+        "status": "pending",
+        "created_at": int(time.time()),
+        "expires_at": int(time.time()) + 1800,
+    }
+    save_moderation_draft(draft_id, draft)
+    await ctx.respond(
+        embed=moderation_draft_embed(draft),
+        view=ModerationRuleSelectView(draft_id, rules),
+        ephemeral=True,
+    )
 
 
 def welcome_allowed_mentions(member):

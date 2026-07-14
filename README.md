@@ -1,6 +1,6 @@
 # DC-Gra-vt-bot
 
-DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、message/embed 發送、reaction role、dropdown role、button role panel、新成員歡迎與延遲跟進，以及 JSON 檔案儲存。
+DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、message/embed 發送、channel/member/role mention、reaction role、dropdown role、button role panel、新成員歡迎、Moderation Rules、Discord 訊息證據與案件封存，以及 JSON 檔案儲存。
 
 ## Project Structure
 
@@ -155,6 +155,8 @@ curl http://127.0.0.1:8000/api/health
 Saved messages、reaction roles、Welcome Automation 設定和待發跟進工作會存到專案根目錄的 `config.json`。Orihost/free container 上請確認 `config.json` 有保留在 Files 裡；如果重新 clone repo 或清空檔案，資料也會跟著消失。
 
 Welcome Automation 支援 `{member}`、`{server}`、`{rules_channel}`。若啟用延遲跟進，需先在 New Member Rules 設定 Rules Channel 和 Fan Role；Bot 重啟後會繼續處理尚未到期的跟進工作。
+
+Moderation Rules 可設定規則編號、原因、嚴重度及預設處置。Dashboard 可貼上 Discord Message Link 自動取得作者與證據；Discord 管理員也可右鍵訊息使用 **Apps → Create Moderation Case**，選 Rule 並確認後建立案件。Resolved／Rejected／Accepted 案件會顯示於 Archive，並可 Reopen。
 
 伺服器 `.env` 建議使用：
 
