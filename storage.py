@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
     "onboarding": {},
+    "welcome_automation": {},
+    "welcome_jobs": [],
     "moderation_cases": {},
     "moderation_settings": {},
     "tickets": {},
@@ -43,6 +45,8 @@ def normalize_config(data):
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
+        "welcome_automation": data.get("welcome_automation", {}) if isinstance(data.get("welcome_automation", {}), dict) else {},
+        "welcome_jobs": data.get("welcome_jobs", []) if isinstance(data.get("welcome_jobs", []), list) else [],
         "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
         "moderation_settings": data.get("moderation_settings", {}) if isinstance(data.get("moderation_settings", {}), dict) else {},
         "tickets": data.get("tickets", {}) if isinstance(data.get("tickets", {}), dict) else {},
@@ -129,6 +133,88 @@ def upsert_onboarding(guild_id, payload):
         config = _load_config_unlocked()
         config.setdefault("onboarding", {})[str(guild_id)] = dict(payload)
         _save_config_unlocked(config)
+
+
+def upsert_welcome_automation(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("welcome_automation", {})[str(guild_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def enqueue_welcome_job(payload):
+    job = dict(payload)
+    with config_lock():
+        config = _load_config_unlocked()
+        jobs = config.setdefault("welcome_jobs", [])
+        if any(str(item.get("job_id")) == str(job.get("job_id")) for item in jobs):
+            return False
+        jobs.append(job)
+        _save_config_unlocked(config)
+    return True
+
+
+def claim_due_welcome_jobs(now, limit=20, lease_seconds=120):
+    claimed = []
+    with config_lock():
+        config = _load_config_unlocked()
+        for job in config.setdefault("welcome_jobs", []):
+            if len(claimed) >= limit:
+                break
+            status = str(job.get("status") or "pending")
+            due_at = float(job.get("due_at") or 0)
+            lease_until = float(job.get("lease_until") or 0)
+            if due_at > now or (status == "processing" and lease_until > now):
+                continue
+            if status not in ("pending", "processing"):
+                continue
+            job["status"] = "processing"
+            job["lease_until"] = now + lease_seconds
+            claimed.append(deepcopy(job))
+        if claimed:
+            _save_config_unlocked(config)
+    return claimed
+
+
+def finish_welcome_job(job_id):
+    with config_lock():
+        config = _load_config_unlocked()
+        jobs = config.setdefault("welcome_jobs", [])
+        remaining = [item for item in jobs if str(item.get("job_id")) != str(job_id)]
+        if len(remaining) == len(jobs):
+            return False
+        config["welcome_jobs"] = remaining
+        _save_config_unlocked(config)
+    return True
+
+
+def retry_welcome_job(job_id, due_at, error=""):
+    with config_lock():
+        config = _load_config_unlocked()
+        for job in config.setdefault("welcome_jobs", []):
+            if str(job.get("job_id")) != str(job_id):
+                continue
+            job["status"] = "pending"
+            job["due_at"] = float(due_at)
+            job["lease_until"] = 0
+            job["attempts"] = int(job.get("attempts") or 0) + 1
+            job["last_error"] = str(error or "")[:500]
+            _save_config_unlocked(config)
+            return True
+    return False
+
+
+def cancel_pending_welcome_jobs(guild_id):
+    guild_id = str(guild_id)
+    with config_lock():
+        config = _load_config_unlocked()
+        jobs = config.setdefault("welcome_jobs", [])
+        remaining = [item for item in jobs if str(item.get("guild_id")) != guild_id]
+        removed = len(jobs) - len(remaining)
+        if removed:
+            config["welcome_jobs"] = remaining
+            _save_config_unlocked(config)
+        return removed
 
 
 def set_moderation_settings(guild_id, payload):

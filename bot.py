@@ -3,9 +3,23 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
-from storage import append_moderation_case, append_ticket, init_db, load_config, save_config, update_moderation_case, upsert_message
+from storage import (
+    append_audit_log,
+    append_moderation_case,
+    append_ticket,
+    claim_due_welcome_jobs,
+    enqueue_welcome_job,
+    finish_welcome_job,
+    init_db,
+    load_config,
+    retry_welcome_job,
+    save_config,
+    update_moderation_case,
+    upsert_message,
+)
+from welcome_automation import build_follow_up_job, follow_up_delay_seconds, normalize_welcome_config, render_welcome_template
 
 load_dotenv()
 init_db()
@@ -567,12 +581,155 @@ bot = discord.Bot(intents=intents)
 reactionrole = bot.create_group("reactionrole", "Manage reaction role messages")
 
 
+def welcome_allowed_mentions(member):
+    return discord.AllowedMentions(everyone=False, roles=False, users=[member], replied_user=False)
+
+
+def log_welcome_result(action, job=None, guild_id="", user_id="", detail=""):
+    payload = {"user_id": str(user_id or (job or {}).get("user_id") or "")}
+    if detail:
+        payload["detail"] = str(detail)[:500]
+    append_audit_log(
+        action,
+        "welcome_automation",
+        str(guild_id or (job or {}).get("guild_id") or ""),
+        "",
+        payload,
+        "bot",
+    )
+
+
+async def process_welcome_follow_up(job):
+    job_id = str(job.get("job_id") or "")
+    guild = bot.get_guild(int(job.get("guild_id") or 0))
+    if not guild:
+        log_welcome_result("follow_up_skipped", job, detail="Server is no longer available")
+        finish_welcome_job(job_id)
+        return
+
+    try:
+        member = await fetch_member(guild, int(job.get("user_id") or 0))
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        member = None
+        member_error = exc
+    else:
+        member_error = None
+    if member_error:
+        await retry_or_finish_welcome_job(job, member_error)
+        return
+    if not member:
+        log_welcome_result("follow_up_skipped", job, detail="Member left the server")
+        finish_welcome_job(job_id)
+        return
+
+    role_id = str(job.get("fan_role_id") or "")
+    role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+    if role and role in member.roles:
+        log_welcome_result("follow_up_skipped", job, detail="Member already completed onboarding")
+        finish_welcome_job(job_id)
+        return
+
+    channel_id = str(job.get("channel_id") or "")
+    channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    if not channel:
+        log_welcome_result("follow_up_failed", job, detail="Welcome channel is no longer available")
+        finish_welcome_job(job_id)
+        return
+
+    content = render_welcome_template(
+        job.get("content"), member.id, guild.name, job.get("rules_channel_id", "")
+    ).strip()
+    if not content:
+        log_welcome_result("follow_up_failed", job, detail="Follow-up message rendered empty")
+        finish_welcome_job(job_id)
+        return
+    try:
+        await channel.send(content, allowed_mentions=welcome_allowed_mentions(member))
+    except (discord.Forbidden, discord.NotFound) as exc:
+        log_welcome_result("follow_up_failed", job, detail=exc)
+        finish_welcome_job(job_id)
+    except discord.HTTPException as exc:
+        await retry_or_finish_welcome_job(job, exc)
+    else:
+        log_welcome_result("follow_up_sent", job)
+        finish_welcome_job(job_id)
+
+
+async def retry_or_finish_welcome_job(job, error):
+    attempts = int(job.get("attempts") or 0) + 1
+    if attempts < 3:
+        retry_welcome_job(job.get("job_id"), time.time() + 300, error)
+        log_welcome_result("follow_up_retry", job, detail=f"Attempt {attempts}: {error}")
+        return
+    log_welcome_result("follow_up_failed", job, detail=f"Failed after {attempts} attempts: {error}")
+    finish_welcome_job(job.get("job_id"))
+
+
+@tasks.loop(seconds=30)
+async def welcome_follow_up_worker():
+    for job in claim_due_welcome_jobs(time.time()):
+        try:
+            await process_welcome_follow_up(job)
+        except Exception as exc:
+            print(f"[WELCOME] Unexpected follow-up failure: {exc}")
+            await retry_or_finish_welcome_job(job, exc)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot:
+        return
+    config = load_config()
+    welcome = normalize_welcome_config(config.get("welcome_automation", {}).get(str(member.guild.id), {}))
+    if not welcome.get("enabled"):
+        return
+
+    channel_id = str(welcome.get("channel_id") or "")
+    channel = member.guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    onboarding = config.get("onboarding", {}).get(str(member.guild.id), {})
+    rules_channel_id = str(onboarding.get("channel_id") or "")
+    fan_role_id = str(onboarding.get("fan_role_id") or onboarding.get("member_role_id") or "")
+    content = render_welcome_template(
+        welcome.get("welcome_content"), member.id, member.guild.name, rules_channel_id
+    ).strip()
+
+    if channel and content:
+        try:
+            await channel.send(content, allowed_mentions=welcome_allowed_mentions(member))
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[WELCOME] Could not welcome {member.id}: {exc}")
+            log_welcome_result("welcome_failed", guild_id=member.guild.id, user_id=member.id, detail=exc)
+        else:
+            log_welcome_result("welcome_sent", guild_id=member.guild.id, user_id=member.id)
+    else:
+        log_welcome_result(
+            "welcome_failed", guild_id=member.guild.id, user_id=member.id, detail="Welcome channel or message unavailable"
+        )
+
+    if welcome.get("follow_up_enabled") and welcome.get("follow_up_content", "").strip():
+        joined_at = time.time()
+        job = build_follow_up_job(
+            member.guild.id,
+            member.id,
+            channel_id,
+            welcome["follow_up_content"],
+            rules_channel_id,
+            fan_role_id,
+            joined_at,
+            follow_up_delay_seconds(welcome),
+        )
+        enqueue_welcome_job(job)
+
+
 @bot.event
 async def on_ready():
     print(f"[BOT] Online as {bot.user} (ID: {bot.user.id})")
     print(f"[BOT] Serving {len(bot.guilds)} guild(s)")
     print("[ONBOARDING] Server Members Intent is required for rules-gate role assignment")
     print("[RR] Dropdown role panels are handled by live interaction routing")
+    if not welcome_follow_up_worker.is_running():
+        welcome_follow_up_worker.start()
+    print("[WELCOME] Follow-up worker is running")
 
 
 @bot.event

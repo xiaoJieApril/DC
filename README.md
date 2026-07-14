@@ -1,6 +1,6 @@
 # DC-Gra-vt-bot
 
-DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、message/embed 發送、reaction role、dropdown role、button role panel，以及 JSON 檔案儲存。
+DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、message/embed 發送、reaction role、dropdown role、button role panel、新成員歡迎與延遲跟進，以及 JSON 檔案儲存。
 
 ## Project Structure
 
@@ -152,7 +152,9 @@ curl http://127.0.0.1:8000/api/health
 
 ## JSON Storage
 
-Saved messages 和 reaction roles 會存到專案根目錄的 `config.json`。Orihost/free container 上請確認 `config.json` 有保留在 Files 裡；如果重新 clone repo 或清空檔案，資料也會跟著消失。
+Saved messages、reaction roles、Welcome Automation 設定和待發跟進工作會存到專案根目錄的 `config.json`。Orihost/free container 上請確認 `config.json` 有保留在 Files 裡；如果重新 clone repo 或清空檔案，資料也會跟著消失。
+
+Welcome Automation 支援 `{member}`、`{server}`、`{rules_channel}`。若啟用延遲跟進，需先在 New Member Rules 設定 Rules Channel 和 Fan Role；Bot 重啟後會繼續處理尚未到期的跟進工作。
 
 伺服器 `.env` 建議使用：
 
@@ -165,4 +167,4 @@ STORAGE_BACKEND=json
 - 不要 commit `.env`、`data/`、`logs/`。
 - 正式 VPS 請設定 `BOT_CONTROL_MODE=systemd`，避免 dashboard UI 重複啟動 bot。
 - `trycloudflare.com` Quick Tunnel 只適合臨時測試。沒有 domain 時，正式入口請用 Lightsail Static IP。
-- Discord Developer Portal 需要開啟 Server Members Intent，New Member Rules 和 member role 發放才會穩定運作。
+- Discord Developer Portal 需要開啟 Server Members Intent，New Member Rules、Welcome Automation 和 member role 發放才會穩定運作。

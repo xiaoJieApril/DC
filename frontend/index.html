@@ -20,6 +20,7 @@
       <button class="nav" data-view="messages">Send Message</button>
       <button class="nav" data-view="roles">Reaction Roles</button>
       <button class="nav" data-view="onboarding">New Member Rules</button>
+      <button class="nav" data-view="welcome">Welcome Automation</button>
       <button class="nav" data-view="moderation">Moderation</button>
       <button class="nav" data-view="saved">Saved</button>
       <button class="nav" data-view="settings">Settings</button>
@@ -77,6 +78,7 @@
               <button data-jump="messages">Send Message</button>
               <button data-jump="roles" class="secondary">Create Role Panel</button>
               <button data-jump="onboarding" class="secondary">New Member Rules</button>
+              <button data-jump="welcome" class="secondary">Welcome Automation</button>
               <button data-jump="moderation" class="secondary">Moderation Cases</button>
               <button data-jump="saved" class="secondary">Manage Saved</button>
             </div>
@@ -229,6 +231,49 @@
           </div>
         </section>
 
+        <!-- Welcome Automation: greet new members now and optionally remind them later. -->
+        <section id="welcome" class="view hidden">
+          <div class="panel">
+            <h2>Welcome Automation</h2>
+            <div class="grid two">
+              <label>Server<select id="welcomeGuild"></select></label>
+              <label>Welcome Channel<select id="welcomeChannel"></select></label>
+            </div>
+            <label class="check"><input id="welcomeEnabled" type="checkbox" /> Enable automatic welcome message</label>
+            <label>Welcome Message<textarea id="welcomeContent" rows="6" placeholder="Required. Use the variables below."></textarea></label>
+            <div class="actions template-actions">
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{member}">{member}</button>
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{server}">{server}</button>
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{rules_channel}">{rules_channel}</button>
+            </div>
+            <div class="preview-box">
+              <div class="preview-label">Welcome Preview</div>
+              <div id="welcomePreview" class="discord-preview"></div>
+            </div>
+
+            <h3>Follow-up Reminder</h3>
+            <label class="check"><input id="followUpEnabled" type="checkbox" /> Send one follow-up in the welcome channel</label>
+            <div class="grid two">
+              <label>Delay<input id="followUpDelayValue" type="number" min="1" value="1" /></label>
+              <label>Unit<select id="followUpDelayUnit"><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label>
+            </div>
+            <label>Follow-up Message<textarea id="followUpContent" rows="6" placeholder="Required when follow-up is enabled."></textarea></label>
+            <div class="actions template-actions">
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{member}">{member}</button>
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{server}">{server}</button>
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{rules_channel}">{rules_channel}</button>
+            </div>
+            <div class="preview-box">
+              <div class="preview-label">Follow-up Preview</div>
+              <div id="followUpPreview" class="discord-preview"></div>
+            </div>
+            <p id="welcomeInfo" class="muted">Completed New Member Rules members will not receive the follow-up.</p>
+            <div class="actions">
+              <button id="saveWelcomeBtn">Save Welcome Automation</button>
+            </div>
+          </div>
+        </section>
+
         <!-- Moderation: staff-created cases, manual actions, ticket intake, and appeal status tracking. -->
         <section id="moderation" class="view hidden">
           <div class="panel">
@@ -315,7 +360,7 @@
     </main>
 
     <div id="toast" class="toast hidden"></div>
-    <script src="./config.js?v=20260710-moderation-shared-loaders"></script>
-    <script src="./app.js?v=20260710-moderation-shared-loaders"></script>
+    <script src="./config.js?v=20260714-welcome-automation"></script>
+    <script src="./app.js?v=20260714-welcome-automation"></script>
   </body>
 </html>

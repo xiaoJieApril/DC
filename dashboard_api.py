@@ -33,9 +33,15 @@ from storage import (
     storage_name,
     update_moderation_case,
     update_ticket,
+    cancel_pending_welcome_jobs,
     upsert_message,
     upsert_onboarding,
     upsert_reaction_role,
+    upsert_welcome_automation,
+)
+from welcome_automation import (
+    normalize_welcome_config,
+    validate_welcome_config,
 )
 
 
@@ -299,6 +305,16 @@ class OnboardingPayload(BaseModel):
     rules_footer: str = ""
     agree_label: str = DEFAULT_ONBOARDING_TEXT["agree_label"]
     languages: dict[str, OnboardingLanguagePayload] = Field(default_factory=dict)
+
+
+class WelcomeAutomationPayload(BaseModel):
+    enabled: bool = False
+    channel_id: str = ""
+    welcome_content: str = ""
+    follow_up_enabled: bool = False
+    follow_up_content: str = ""
+    delay_value: int = 1
+    delay_unit: str = "hours"
 
 
 class SavedUpdatePayload(BaseModel):
@@ -1188,6 +1204,46 @@ def publish_onboarding(guild_id: str):
         request_actor(),
     )
     return {"ok": True, "message_id": panel_message_id, "guild_id": guild_id, "record": config}
+
+
+@app.get("/api/welcome-automation/{guild_id}", dependencies=[Depends(require_admin)])
+def get_welcome_automation(guild_id: str):
+    config = load_config()
+    return normalize_welcome_config(config.get("welcome_automation", {}).get(str(guild_id), {}))
+
+
+@app.put("/api/welcome-automation/{guild_id}", dependencies=[Depends(require_admin)])
+def save_welcome_automation(guild_id: str, payload: WelcomeAutomationPayload):
+    welcome = normalize_welcome_config(model_to_dict(payload))
+    onboarding = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+
+    if welcome["enabled"]:
+        try:
+            validate_welcome_config(welcome, onboarding)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        channel = cached_channel(welcome["channel_id"])
+        if str(channel.get("guild_id")) != str(guild_id):
+            raise HTTPException(status_code=400, detail="Selected welcome channel does not belong to this server")
+
+    upsert_welcome_automation(guild_id, welcome)
+    cancelled = 0
+    if not welcome["enabled"]:
+        cancelled = cancel_pending_welcome_jobs(guild_id)
+    append_audit_log(
+        "saved",
+        "welcome_automation",
+        guild_id,
+        "",
+        {
+            "channel_id": welcome["channel_id"],
+            "enabled": welcome["enabled"],
+            "follow_up_enabled": welcome["follow_up_enabled"],
+            "cancelled_jobs": cancelled,
+        },
+        request_actor(),
+    )
+    return {**welcome, "cancelled_jobs": cancelled}
 
 
 @app.get("/api/moderation/{guild_id}", dependencies=[Depends(require_admin)])

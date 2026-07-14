@@ -12,6 +12,7 @@ const state = {
   moderation: { settings: null, cases: [] },
   tickets: { settings: null, tickets: [] },
   onboarding: null,
+  welcome: null,
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
@@ -24,6 +25,7 @@ const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
 const commonEmojis = ["🎮", "✅", "⭐", "🔥", "💬", "🎨", "❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣"];
 // Release notes are frontend-owned for now; no storage or admin editor is needed.
 const latestUpdates = [
+  "Welcome Automation greets new members and can send one delayed rules reminder.",
   "New member language rules gate.",
   "Members can choose language and see private rules.",
   "Agreeing to rules gives the configured member role.",
@@ -170,6 +172,7 @@ function setView(name) {
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
     onboarding: ["New Member Rules", "Private rules gate with language selection."],
+    welcome: ["Welcome Automation", "Greet new members and send one delayed follow-up."],
     moderation: ["Moderation", "Record warnings, probation, timeout, and appeal status."],
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
@@ -178,6 +181,8 @@ function setView(name) {
   $("viewSubtitle").textContent = titles[name][1];
   if (name === "onboarding") {
     ensureOnboardingLoaded();
+  } else if (name === "welcome") {
+    ensureWelcomeLoaded();
   } else if (name === "moderation") {
     ensureModerationLoaded();
   }
@@ -195,6 +200,20 @@ async function ensureOnboardingLoaded() {
     await loadOnboardingControls();
   } catch (err) {
     $("obInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+  }
+}
+
+async function ensureWelcomeLoaded() {
+  try {
+    if (!state.guilds.length) await ensureGuildsLoaded();
+    if (!state.guilds.length) {
+      $("welcomeInfo").textContent = "Server list unavailable.";
+      return;
+    }
+    fillGuildSelectors();
+    await refreshWelcomeControls();
+  } catch (err) {
+    $("welcomeInfo").textContent = `Welcome Automation unavailable: ${err.message}`;
   }
 }
 
@@ -382,7 +401,7 @@ async function loadGuilds(force = false) {
 }
 
 function fillGuildSelectors() {
-  ["msgGuild", "rrGuild", "obGuild", "modGuild"].forEach((id) => {
+  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild"].forEach((id) => {
     if (!$(id)) return;
     if (!state.guilds.length) {
       fillSelectMessage($(id), "No servers available");
@@ -407,7 +426,7 @@ async function ensureGuildsLoaded(force = false) {
     return state.guilds;
   }
   guildLoadAttempted = true;
-  ["msgGuild", "rrGuild", "obGuild", "modGuild"].forEach((id) => {
+  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild"].forEach((id) => {
     if ($(id)) fillSelectMessage($(id), "Loading servers...");
   });
   guildsPromise = (async () => {
@@ -418,6 +437,7 @@ async function ensureGuildsLoaded(force = false) {
     fillSelectMessage($("msgGuild"), "Server list unavailable");
     fillSelectMessage($("rrGuild"), "Server list unavailable");
     fillSelectMessage($("obGuild"), "Server list unavailable");
+    fillSelectMessage($("welcomeGuild"), "Server list unavailable");
     fillSelectMessage($("modGuild"), "Server list unavailable");
     setModerationStatus("Server list unavailable. Check the dashboard API connection and try again.");
     setTicketStatus("Ticket settings unavailable until the server list loads.");
@@ -617,6 +637,85 @@ async function applyServerRulesDefaults() {
   const config = await api(`/api/onboarding/${guildId}/server-rules-defaults`, { method: "POST" });
   applyOnboardingForm(config);
   toast("Server rules loaded into New Member Rules.");
+  await loadAuditLogs();
+}
+
+function applyWelcomeForm(config) {
+  state.welcome = config;
+  $("welcomeEnabled").checked = !!config.enabled;
+  $("welcomeContent").value = config.welcome_content || "";
+  $("followUpEnabled").checked = !!config.follow_up_enabled;
+  $("followUpContent").value = config.follow_up_content || "";
+  $("followUpDelayValue").value = config.delay_value || 1;
+  $("followUpDelayUnit").value = config.delay_unit || "hours";
+  if ([...$("welcomeChannel").options].some((option) => option.value === config.channel_id)) {
+    $("welcomeChannel").value = config.channel_id;
+  }
+  $("welcomeInfo").textContent = "Completed New Member Rules members will not receive the follow-up.";
+  renderWelcomePreviews();
+}
+
+function collectWelcomeForm() {
+  return {
+    enabled: $("welcomeEnabled").checked,
+    channel_id: $("welcomeChannel").value,
+    welcome_content: $("welcomeContent").value,
+    follow_up_enabled: $("followUpEnabled").checked,
+    follow_up_content: $("followUpContent").value,
+    delay_value: Number($("followUpDelayValue").value || 0),
+    delay_unit: $("followUpDelayUnit").value,
+  };
+}
+
+function welcomePreviewText(value) {
+  const guild = state.guilds.find((item) => String(item.id) === String($("welcomeGuild").value));
+  return String(value || "")
+    .replaceAll("{member}", "@New Member")
+    .replaceAll("{server}", guild?.name || "Your Server")
+    .replaceAll("{rules_channel}", "#rules-channel");
+}
+
+function renderWelcomePreviews() {
+  const welcome = welcomePreviewText($("welcomeContent").value);
+  const followUp = welcomePreviewText($("followUpContent").value);
+  $("welcomePreview").innerHTML = welcome
+    ? `<div class="plain-preview">${renderDiscordText(welcome)}</div>`
+    : '<div class="plain-preview muted">Welcome message preview</div>';
+  $("followUpPreview").innerHTML = followUp
+    ? `<div class="plain-preview">${renderDiscordText(followUp)}</div>`
+    : '<div class="plain-preview muted">Follow-up message preview</div>';
+}
+
+function insertWelcomeToken(button) {
+  const field = $(button.dataset.target);
+  const token = button.dataset.token;
+  const start = field.selectionStart ?? field.value.length;
+  const end = field.selectionEnd ?? start;
+  field.value = `${field.value.slice(0, start)}${token}${field.value.slice(end)}`;
+  field.focus();
+  field.setSelectionRange(start + token.length, start + token.length);
+  renderWelcomePreviews();
+}
+
+async function refreshWelcomeControls() {
+  const guildId = $("welcomeGuild").value;
+  if (!guildId) return;
+  $("welcomeInfo").textContent = "Loading Welcome Automation...";
+  await fillChannelSelect("welcomeChannel", guildId, "Choose welcome channel");
+  const config = await api(`/api/welcome-automation/${guildId}`);
+  applyWelcomeForm(config);
+}
+
+async function saveWelcomeAutomation() {
+  const guildId = $("welcomeGuild").value;
+  if (!guildId) return toast("Choose a server first.");
+  const config = await api(`/api/welcome-automation/${guildId}`, {
+    method: "PUT",
+    body: JSON.stringify(collectWelcomeForm()),
+  });
+  applyWelcomeForm(config);
+  const cancelled = Number(config.cancelled_jobs || 0);
+  toast(cancelled ? `Welcome Automation saved. ${cancelled} pending follow-up(s) cancelled.` : "Welcome Automation saved.");
   await loadAuditLogs();
 }
 
@@ -1443,6 +1542,12 @@ function wireEvents() {
   $("loadServerRulesBtn").addEventListener("click", () => runAction("Load server rules", applyServerRulesDefaults));
   $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
   $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
+  $("welcomeGuild").addEventListener("change", () => runAction("Load welcome server", refreshWelcomeControls));
+  ["welcomeContent", "followUpContent"].forEach((id) => $(id).addEventListener("input", renderWelcomePreviews));
+  document.querySelectorAll(".welcome-token").forEach((button) => {
+    button.addEventListener("click", () => insertWelcomeToken(button));
+  });
+  $("saveWelcomeBtn").addEventListener("click", () => runAction("Save Welcome Automation", saveWelcomeAutomation));
   $("modGuild").addEventListener("change", async () => {
     await runAction("Load moderation server", refreshModerationControls);
   });
