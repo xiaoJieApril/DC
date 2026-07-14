@@ -74,7 +74,7 @@ DEFAULT_ONBOARDING_LANGUAGES = {
 }
 DEFAULT_ONBOARDING_TEXT = {
     "panel_title": "Choose your rules language",
-    "panel_description": "Select one language for private rules. If you select multiple languages, English rules will be shown.",
+    "panel_description": "Select one language to read its rules. Members who already have that fan role will see the rules without an Agree button.",
     "panel_placeholder": "Select language",
     "panel_color": "Blurple",
     "rules_title": "{label} Rules",
@@ -84,7 +84,7 @@ DEFAULT_ONBOARDING_TEXT = {
 }
 SERVER_RULES_ONBOARDING_TEXT = {
     "panel_title": "📜 Server Guidelines",
-    "panel_description": "Please choose your language to read the server rules privately. If you select multiple languages, English rules will be shown.",
+    "panel_description": "Please choose one language to read the server rules privately.",
     "panel_placeholder": "Choose your language",
     "panel_color": "Blurple",
     "rules_title": "{label} Server Guidelines",
@@ -891,7 +891,7 @@ def onboarding_panel_payload(guild_id, config):
         {
             "label": label[:100],
             "value": code[:100],
-            "description": "Select multiple to receive English rules"[:100],
+            "description": f"Read the {label} rules"[:100],
         }
         for code, label, _ in languages
     ]
@@ -913,7 +913,7 @@ def onboarding_panel_payload(guild_id, config):
                         "custom_id": f"onboarding_language:{guild_id}",
                         "placeholder": str(config.get("panel_placeholder") or DEFAULT_ONBOARDING_TEXT["panel_placeholder"])[:150],
                         "min_values": 1,
-                        "max_values": min(len(options), 25),
+                        "max_values": 1,
                         "options": options,
                     }
                 ],
@@ -1213,8 +1213,13 @@ def publish_onboarding(guild_id: str):
     channel_id = str(config.get("channel_id") or "")
     if not channel_id.isdigit():
         raise HTTPException(status_code=400, detail="Choose a rules channel")
-    if not str(config.get("fan_role_id") or config.get("member_role_id") or "").isdigit():
-        raise HTTPException(status_code=400, detail="Choose the fan role to assign")
+    missing_language_roles = [
+        label
+        for code, label, _ in enabled_onboarding_languages(config)
+        if not str((config.get("languages", {}).get(code) or {}).get("language_role_id") or "").isdigit()
+    ]
+    if missing_language_roles:
+        raise HTTPException(status_code=400, detail=f"Choose a role for: {', '.join(missing_language_roles)}")
     channel = cached_channel(channel_id)
     if str(channel.get("guild_id")) != str(guild_id):
         raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")

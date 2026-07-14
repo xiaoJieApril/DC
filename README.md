@@ -154,7 +154,9 @@ curl http://127.0.0.1:8000/api/health
 
 Saved messages、reaction roles、Welcome Automation 設定和待發跟進工作會存到專案根目錄的 `config.json`。Orihost/free container 上請確認 `config.json` 有保留在 Files 裡；如果重新 clone repo 或清空檔案，資料也會跟著消失。
 
-Welcome Automation 支援 `{member}`、`{server}`、`{rules_channel}`。若啟用延遲跟進，需先在 New Member Rules 設定 Rules Channel 和 Fan Role；Bot 重啟後會繼續處理尚未到期的跟進工作。
+New Member Rules 會在指定頻道發布單選語言訊息。每個啟用語言需指定自己的 Fans Role；成員選擇語言後會私下看到該語言規則，未有對應 Role 時顯示 Agree 按鈕，已有 Role 時只顯示規則。Common Member Role 為可選，設定後會在同意規則時一併授予。
+
+Welcome Automation 支援 `{member}`、`{server}`、`{rules_channel}`。若啟用延遲跟進，需先在 New Member Rules 設定 Rules Channel 和至少一個 Fans Role；Bot 重啟後會繼續處理尚未到期的跟進工作，並會略過已取得任一語言 Fans Role 的成員。
 
 Moderation Rules 可設定規則編號、原因、嚴重度及預設處置。Dashboard 可貼上 Discord Message Link 自動取得作者與證據；Discord 管理員也可右鍵訊息使用 **Apps → Create Moderation Case**，選 Rule 並確認後建立案件。Resolved／Rejected／Accepted 案件會顯示於 Archive，並可 Reopen。
 

@@ -53,8 +53,9 @@ def validate_welcome_config(config, onboarding):
     if uses_rules_channel or config.get("follow_up_enabled"):
         if not str(onboarding.get("channel_id") or "").isdigit():
             raise ValueError("Configure the New Member Rules channel first")
-        if not str(onboarding.get("fan_role_id") or onboarding.get("member_role_id") or "").isdigit():
-            raise ValueError("Configure the New Member Rules fan role first")
+        role_ids = onboarding_completion_role_ids(onboarding)
+        if not role_ids:
+            raise ValueError("Configure at least one New Member Rules fan role first")
 
     if config.get("follow_up_enabled"):
         delay_seconds = follow_up_delay_seconds(config)
@@ -74,7 +75,27 @@ def render_welcome_template(content, member_id, server_name, rules_channel_id=""
     return result
 
 
-def build_follow_up_job(guild_id, user_id, channel_id, content, rules_channel_id, fan_role_id, joined_at, delay_seconds):
+def onboarding_completion_role_ids(onboarding):
+    role_ids = []
+    common_role_id = str(onboarding.get("fan_role_id") or onboarding.get("member_role_id") or "")
+    if common_role_id.isdigit():
+        role_ids.append(common_role_id)
+    for item in (onboarding.get("languages") or {}).values():
+        if not isinstance(item, dict) or not item.get("enabled"):
+            continue
+        role_id = str(item.get("language_role_id") or "")
+        if role_id.isdigit() and role_id not in role_ids:
+            role_ids.append(role_id)
+    return role_ids
+
+
+def build_follow_up_job(
+    guild_id, user_id, channel_id, content, rules_channel_id, fan_role_id,
+    joined_at, delay_seconds, fan_role_ids=None,
+):
+    role_ids = [str(role_id) for role_id in (fan_role_ids or []) if str(role_id).isdigit()]
+    if str(fan_role_id or "").isdigit() and str(fan_role_id) not in role_ids:
+        role_ids.insert(0, str(fan_role_id))
     return {
         "job_id": f"{guild_id}:{user_id}:{int(float(joined_at) * 1000)}",
         "guild_id": str(guild_id),
@@ -83,6 +104,7 @@ def build_follow_up_job(guild_id, user_id, channel_id, content, rules_channel_id
         "content": str(content),
         "rules_channel_id": str(rules_channel_id or ""),
         "fan_role_id": str(fan_role_id or ""),
+        "fan_role_ids": role_ids,
         "due_at": float(joined_at) + int(delay_seconds),
         "status": "pending",
         "lease_until": 0,

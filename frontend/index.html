@@ -195,7 +195,7 @@
             <div class="grid three">
               <label>Server<select id="obGuild"></select></label>
               <label>Rules Channel<select id="obChannel"></select></label>
-              <label>Fan Role<select id="obFanRole"></select></label>
+              <label>Common Member Role (Optional)<select id="obFanRole"></select></label>
             </div>
             <label class="check"><input id="obEnabled" type="checkbox" /> Enable private rules gate</label>
             <h3>Language Panel</h3>
@@ -215,18 +215,21 @@
             <div class="language-grid">
               <article class="language-card">
                 <label class="check"><input id="obLangEnabledZh" type="checkbox" /> Chinese</label>
+                <label>Chinese Role<select id="obLangRoleZh"></select></label>
                 <label>Rules<textarea id="obLangRulesZh" rows="5"></textarea></label>
               </article>
               <article class="language-card">
                 <label class="check"><input id="obLangEnabledEn" type="checkbox" /> English</label>
+                <label>English Role<select id="obLangRoleEn"></select></label>
                 <label>Rules<textarea id="obLangRulesEn" rows="5"></textarea></label>
               </article>
               <article class="language-card">
                 <label class="check"><input id="obLangEnabledJa" type="checkbox" /> Japanese</label>
+                <label>Japanese Role<select id="obLangRoleJa"></select></label>
                 <label>Rules<textarea id="obLangRulesJa" rows="5"></textarea></label>
               </article>
             </div>
-            <p id="obInfo" class="muted">Publish a selector in the rules channel. Multiple selected languages will show English rules.</p>
+            <p id="obInfo" class="muted">Members choose one language. Members who already have its role only see the rules.</p>
             <div class="actions">
               <button id="loadServerRulesBtn" class="secondary">Load Server Rules</button>
               <button id="saveOnboardingBtn">Save New Member Rules</button>
@@ -393,7 +396,7 @@
     </main>
 
     <div id="toast" class="toast hidden"></div>
-    <script src="./config.js?v=20260714-moderation-rules"></script>
-    <script src="./app.js?v=20260714-moderation-rules"></script>
+    <script src="./config.js?v=20260714-language-rules"></script>
+    <script src="./app.js?v=20260714-language-rules"></script>
   </body>
 </html>

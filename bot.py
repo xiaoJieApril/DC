@@ -25,7 +25,13 @@ from storage import (
     upsert_message,
 )
 from moderation_tools import evidence_snapshot_from_message, normalize_moderation_rules
-from welcome_automation import build_follow_up_job, follow_up_delay_seconds, normalize_welcome_config, render_welcome_template
+from welcome_automation import (
+    build_follow_up_job,
+    follow_up_delay_seconds,
+    normalize_welcome_config,
+    onboarding_completion_role_ids,
+    render_welcome_template,
+)
 
 load_dotenv()
 init_db()
@@ -672,18 +678,23 @@ def onboarding_language(entry, language):
 
 
 def selected_onboarding_language(values):
-    # Multi-language selection intentionally falls back to English rules.
     clean_values = [str(value) for value in values if str(value)]
-    if len(clean_values) > 1:
-        return "en"
-    return clean_values[0] if clean_values else ""
+    return clean_values[0] if len(clean_values) == 1 else ""
 
 
-async def onboarding_member_and_role(guild, user_id, entry):
-    # Resolve the configured fan role and the interacting member once per onboarding action.
-    role_id = str(entry.get("fan_role_id") or entry.get("member_role_id") or "")
+def onboarding_role_id(entry, language):
+    item = onboarding_language(entry, language)
+    if not item:
+        return ""
+    # Language-specific fan roles are preferred. The common role remains a
+    # backwards-compatible fallback for panels published before this upgrade.
+    return str(item.get("language_role_id") or entry.get("fan_role_id") or entry.get("member_role_id") or "")
+
+
+async def onboarding_member_and_role(guild, user_id, entry, language):
+    role_id = onboarding_role_id(entry, language)
     if not role_id:
-        return None, None, "Onboarding is missing the fan role. Please contact an admin."
+        return None, None, "This language is missing its fan role. Please contact an admin."
     try:
         role = guild.get_role(int(role_id))
     except (TypeError, ValueError):
@@ -697,20 +708,13 @@ async def onboarding_member_and_role(guild, user_id, entry):
 
 
 async def send_onboarding_rules(interaction, entry, language):
-    member, role, error = await onboarding_member_and_role(interaction.guild, interaction.user.id, entry)
-    if error:
-        await interaction.followup.send(error, ephemeral=True)
-        return
-    if role in member.roles:
-        await interaction.followup.send(f"You already completed onboarding and have **{role.name}**.", ephemeral=True)
-        return
-
     item = onboarding_language(entry, language)
-    if not item and language != "en":
-        language = "en"
-        item = onboarding_language(entry, language)
     if not item:
         await interaction.followup.send("This language is not available anymore.", ephemeral=True)
+        return
+    member, role, error = await onboarding_member_and_role(interaction.guild, interaction.user.id, entry, language)
+    if error:
+        await interaction.followup.send(error, ephemeral=True)
         return
     label = item.get("label") or language
     rules = str(item.get("rules") or "").strip()
@@ -724,26 +728,35 @@ async def send_onboarding_rules(interaction, entry, language):
     footer = str(entry.get("rules_footer") or "").strip()
     if footer:
         embed.set_footer(text=footer[:2048])
-    await interaction.followup.send(
-        embed=embed,
-        view=OnboardingAgreeView(interaction.guild.id, language, entry.get("agree_label") or "Agree"),
-        ephemeral=True,
-    )
+    # Existing fan-role members can re-read the rules without receiving an
+    # action they no longer need. New members get exactly one Agree button.
+    view = None
+    if role not in member.roles:
+        view = OnboardingAgreeView(interaction.guild.id, language, entry.get("agree_label") or "Agree")
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-async def apply_onboarding_agreement(interaction, entry, guild=None):
+async def apply_onboarding_agreement(interaction, entry, language, guild=None):
     guild = guild or interaction.guild
-    member, role, error = await onboarding_member_and_role(guild, interaction.user.id, entry)
+    member, role, error = await onboarding_member_and_role(guild, interaction.user.id, entry, language)
     if error:
         return error
     if role in member.roles:
         return f"You already completed onboarding and have **{role.name}**."
-    ok, reason = bot_can_manage_role(guild, role)
-    if not ok:
-        return reason
+    roles_to_add = [role]
+    common_role_id = str(entry.get("fan_role_id") or entry.get("member_role_id") or "")
+    if common_role_id.isdigit() and common_role_id != str(role.id):
+        common_role = guild.get_role(int(common_role_id))
+        if common_role and common_role not in member.roles:
+            roles_to_add.append(common_role)
+    for target_role in roles_to_add:
+        ok, reason = bot_can_manage_role(guild, target_role)
+        if not ok:
+            return reason
     try:
-        await member.add_roles(role, reason="Accepted onboarding rules")
-        return f"Welcome! **{role.name}** has been added."
+        await member.add_roles(*roles_to_add, reason=f"Accepted {language} onboarding rules")
+        names = ", ".join(f"**{target.name}**" for target in roles_to_add)
+        return f"Welcome! {names} has been added."
     except discord.Forbidden:
         return f"I do not have permission to give **{role.name}**."
     except discord.HTTPException as exc:
@@ -836,9 +849,15 @@ async def process_welcome_follow_up(job):
         finish_welcome_job(job_id)
         return
 
-    role_id = str(job.get("fan_role_id") or "")
-    role = guild.get_role(int(role_id)) if role_id.isdigit() else None
-    if role and role in member.roles:
+    role_ids = [str(role_id) for role_id in (job.get("fan_role_ids") or [])]
+    legacy_role_id = str(job.get("fan_role_id") or "")
+    if legacy_role_id and legacy_role_id not in role_ids:
+        role_ids.append(legacy_role_id)
+    completed = any(
+        role_id.isdigit() and (guild.get_role(int(role_id)) in member.roles)
+        for role_id in role_ids
+    )
+    if completed:
         log_welcome_result("follow_up_skipped", job, detail="Member already completed onboarding")
         finish_welcome_job(job_id)
         return
@@ -903,6 +922,7 @@ async def on_member_join(member: discord.Member):
     onboarding = config.get("onboarding", {}).get(str(member.guild.id), {})
     rules_channel_id = str(onboarding.get("channel_id") or "")
     fan_role_id = str(onboarding.get("fan_role_id") or onboarding.get("member_role_id") or "")
+    fan_role_ids = onboarding_completion_role_ids(onboarding)
     content = render_welcome_template(
         welcome.get("welcome_content"), member.id, member.guild.name, rules_channel_id
     ).strip()
@@ -931,6 +951,7 @@ async def on_member_join(member: discord.Member):
             fan_role_id,
             joined_at,
             follow_up_delay_seconds(welcome),
+            fan_role_ids=fan_role_ids,
         )
         enqueue_welcome_job(job)
 
@@ -978,6 +999,9 @@ async def on_interaction(interaction: discord.Interaction):
                 return
             values = [str(value) for value in data.get("values", [])]
             language = selected_onboarding_language(values)
+            if not language:
+                await interaction.followup.send("Choose exactly one language.", ephemeral=True)
+                return
             await send_onboarding_rules(interaction, entry, language)
             return
 
@@ -988,7 +1012,7 @@ async def on_interaction(interaction: discord.Interaction):
             if not entry or not onboarding_language(entry, language):
                 await interaction.followup.send("This onboarding option is not available anymore.", ephemeral=True)
                 return
-            result = await apply_onboarding_agreement(interaction, entry)
+            result = await apply_onboarding_agreement(interaction, entry, language)
             await interaction.followup.send(result, ephemeral=True)
             return
 

@@ -528,6 +528,11 @@ async function loadOnboardingRoles() {
   const guildId = $("obGuild").value;
   if (!guildId) return;
   await fillRoleSelect("obFanRole", guildId, "Choose role");
+  await Promise.all([
+    fillRoleSelect("obLangRoleZh", guildId, "Choose Chinese role"),
+    fillRoleSelect("obLangRoleEn", guildId, "Choose English role"),
+    fillRoleSelect("obLangRoleJa", guildId, "Choose Japanese role"),
+  ]);
 }
 
 async function loadOnboardingControls() {
@@ -549,9 +554,9 @@ async function refreshOnboardingControls() {
 }
 
 const onboardingLanguageIds = {
-  zh: { enabled: "obLangEnabledZh", rules: "obLangRulesZh", label: "中文" },
-  en: { enabled: "obLangEnabledEn", rules: "obLangRulesEn", label: "English" },
-  ja: { enabled: "obLangEnabledJa", rules: "obLangRulesJa", label: "日本語" },
+  zh: { enabled: "obLangEnabledZh", role: "obLangRoleZh", rules: "obLangRulesZh", label: "中文" },
+  en: { enabled: "obLangEnabledEn", role: "obLangRoleEn", rules: "obLangRulesEn", label: "English" },
+  ja: { enabled: "obLangEnabledJa", role: "obLangRoleJa", rules: "obLangRulesJa", label: "日本語" },
 };
 
 function applyOnboardingForm(config) {
@@ -573,11 +578,12 @@ function applyOnboardingForm(config) {
   Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
     const item = config.languages?.[code] || {};
     $(ids.enabled).checked = !!item.enabled;
+    $(ids.role).value = item.language_role_id || "";
     $(ids.rules).value = item.rules || "";
   });
   $("obInfo").textContent = config.panel_message_id
     ? `Language panel message: ${config.panel_message_id}`
-    : "Publish a selector in the rules channel. Multiple selected languages will show English rules.";
+    : "Publish a single-language selector. Existing language-role members only see the rules.";
 }
 
 function collectOnboardingForm() {
@@ -586,7 +592,7 @@ function collectOnboardingForm() {
     languages[code] = {
       label: ids.label,
       enabled: $(ids.enabled).checked,
-      language_role_id: "",
+      language_role_id: $(ids.role).value,
       rules: $(ids.rules).value,
     };
   });
