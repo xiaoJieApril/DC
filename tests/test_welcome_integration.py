@@ -127,6 +127,27 @@ class WelcomeApiTests(unittest.TestCase):
                 dashboard_api.save_welcome_automation("10", payload)
         self.assertEqual(raised.exception.status_code, 400)
 
+    def test_settings_save_uses_selector_cache_without_discord_request(self):
+        payload = dashboard_api.WelcomeAutomationPayload(
+            enabled=True,
+            channel_id="30",
+            welcome_content="Welcome {member}",
+        )
+        selector_cache = {
+            "data": [{"id": "30", "guild_id": "10", "type": 0, "name": "welcome"}],
+            "stale": True,
+            "cached_at": "2026-07-14T12:00:00+00:00",
+            "retry_after_seconds": 600,
+        }
+        with patch.object(dashboard_api, "load_config", return_value={}), \
+             patch.object(dashboard_api.discord_guard, "peek", return_value=selector_cache), \
+             patch.object(dashboard_api, "cached_channel") as direct_get, \
+             patch.object(dashboard_api, "upsert_welcome_automation"), \
+             patch.object(dashboard_api, "append_audit_log"):
+            result = dashboard_api.save_welcome_automation("10", payload)
+        self.assertTrue(result["enabled"])
+        direct_get.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

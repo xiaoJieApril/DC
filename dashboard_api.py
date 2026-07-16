@@ -17,9 +17,11 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
 from discord_guard import DiscordGuard, DiscordGuardError
+from request_limits import IdempotencyStore, SharedRateCoordinator, SlidingWindowLimiter, env_int
 
 from storage import (
     append_audit_log,
@@ -227,6 +229,9 @@ BOT_PID_PATH = LOG_DIR / "bot.pid"
 BOT_LOCK = threading.Lock()
 BOT_PROCESS = None
 BOT_STARTED_AT = 0.0
+RATE_COORDINATOR = SharedRateCoordinator(BASE_DIR / "data" / "request_limits.sqlite3")
+DASHBOARD_LIMITER = SlidingWindowLimiter()
+IDEMPOTENCY_STORE = IdempotencyStore(ttl_seconds=env_int("DASHBOARD_IDEMPOTENCY_TTL_SECONDS", 300))
 
 
 def env(name, default=""):
@@ -261,12 +266,98 @@ app.add_middleware(
 )
 
 
+def request_identity(request):
+    raw = request.headers.get("authorization") or request.cookies.get("session")
+    if not raw:
+        raw = request.client.host if request.client else "unknown"
+    return hashlib.sha256(str(raw).encode("utf-8")).hexdigest()[:24]
+
+
+def api_rate_scope(request):
+    path = request.url.path
+    method = request.method.upper()
+    if path == "/api/login":
+        return "login", env_int("DASHBOARD_LOGIN_LIMIT_PER_MINUTE", 5)
+    discord_write = method != "GET" and (
+        path.startswith("/api/messages")
+        or path.startswith("/api/reaction-roles")
+        or path.endswith("/publish")
+        or path == "/api/moderation/cases"
+        or (path.startswith("/api/saved/") and method == "DELETE")
+    )
+    if discord_write:
+        return "discord_write", env_int("DASHBOARD_DISCORD_WRITE_LIMIT_PER_MINUTE", 10)
+    if path.startswith("/api/discord/"):
+        return "discord_read", env_int("DASHBOARD_DISCORD_READ_LIMIT_PER_MINUTE", 30)
+    if method == "GET":
+        return "local_read", env_int("DASHBOARD_LOCAL_READ_LIMIT_PER_MINUTE", 120)
+    return "local_write", env_int("DASHBOARD_LOCAL_WRITE_LIMIT_PER_MINUTE", 30)
+
+
+def rate_limit_response(scope, retry_after, code="dashboard_rate_limited"):
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(retry_after)},
+        content={"detail": {
+            "message": "Dashboard requests are temporarily limited. Please wait before trying again.",
+            "code": code,
+            "retry_after_seconds": retry_after,
+            "scope": scope,
+        }},
+    )
+
+
+@app.middleware("http")
+async def dashboard_request_protection(request: Request, call_next):
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    identity = request_identity(request)
+    scope, limit = api_rate_scope(request)
+    allowed, retry_after = DASHBOARD_LIMITER.check(scope, identity, limit)
+    if not allowed:
+        RATE_COORDINATOR.increment("dashboard_rejected")
+        return rate_limit_response(scope, retry_after)
+
+    idempotency_key = request.headers.get("x-idempotency-key", "").strip()[:128]
+    use_idempotency = request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and bool(idempotency_key)
+    if not use_idempotency:
+        return await call_next(request)
+
+    state, entry = IDEMPOTENCY_STORE.begin(identity, idempotency_key)
+    if state == "inflight":
+        RATE_COORDINATOR.increment("dashboard_duplicate_blocked")
+        return rate_limit_response("idempotency", 1, "duplicate_request_inflight")
+    if state == "replay":
+        RATE_COORDINATOR.increment("dashboard_duplicate_replayed")
+        headers = {key: value for key, value in entry.get("headers", {}).items() if key.lower() not in {"transfer-encoding"}}
+        headers["X-Idempotent-Replay"] = "true"
+        return Response(content=entry.get("body", b""), status_code=entry.get("status_code", 200), headers=headers)
+
+    try:
+        response = await call_next(request)
+        if hasattr(response, "body_iterator"):
+            body = b"".join([chunk async for chunk in response.body_iterator])
+        else:
+            body = bytes(getattr(response, "body", b""))
+        headers = dict(response.headers)
+        rebuilt = Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
+        if response.status_code < 500:
+            IDEMPOTENCY_STORE.complete(identity, idempotency_key, response.status_code, body, headers)
+        else:
+            IDEMPOTENCY_STORE.discard(identity, idempotency_key)
+        return rebuilt
+    except Exception:
+        IDEMPOTENCY_STORE.discard(identity, idempotency_key)
+        raise
+
+
 class LoginPayload(BaseModel):
     username: str
     password: str
 
 
 class MessagePayload(BaseModel):
+    guild_id: str = ""
     channel_id: str
     content: str
     use_embed: bool = True
@@ -282,6 +373,7 @@ class MappingPayload(BaseModel):
 
 
 class ReactionRolePayload(BaseModel):
+    guild_id: str = ""
     channel_id: str
     panel_name: str = ""
     title: str = ""
@@ -597,10 +689,22 @@ def token():
     return value
 
 
+def shared_discord_request_permit():
+    allowed, retry_after = RATE_COORDINATOR.check_window(
+        "discord_api_global_budget",
+        env_int("DISCORD_SHARED_REQUESTS_PER_SECOND", 25),
+        1,
+    )
+    if not allowed:
+        RATE_COORDINATOR.increment("shared_discord_budget_rejected")
+    return allowed, retry_after
+
+
 discord_guard = DiscordGuard(
     DISCORD_API,
     token,
     cache_file=Path(__file__).resolve().parent / "data" / "discord_cache.json",
+    request_permit=shared_discord_request_permit,
 )
 
 
@@ -646,6 +750,31 @@ def cached_emojis(guild_id):
 
 def cached_channel(channel_id):
     return discord_cached_get(f"/channels/{channel_id}", f"channel:{channel_id}")["data"]
+
+
+def cached_guild_channel(guild_id, channel_id):
+    """Validate a selected channel from the persisted guild selector cache first."""
+    guild_id = str(guild_id)
+    channel_id = str(channel_id)
+    cached = discord_guard.peek(f"channels:{guild_id}", allow_stale=True)
+    if cached:
+        channel = next(
+            (
+                item for item in cached.get("data", [])
+                if str(item.get("id")) == channel_id and item.get("type") in (0, 5)
+            ),
+            None,
+        )
+        if not channel:
+            raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+        return channel
+
+    # Backwards-compatible fallback for a first save made before the guild's
+    # channel selector has ever been loaded and persisted.
+    channel = cached_channel(channel_id)
+    if str(channel.get("guild_id")) != guild_id:
+        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+    return channel
 
 
 def first_non_empty_line(value):
@@ -1056,7 +1185,16 @@ def apply_moderation_action(payload, settings):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "storage": storage_name(), "bot": bot_status_payload(), "discord": discord_guard.status()}
+    return {
+        "ok": True,
+        "storage": storage_name(),
+        "bot": bot_status_payload(),
+        "discord": discord_guard.status(),
+        "rate_limits": {
+            "dashboard_rejected": DASHBOARD_LIMITER.rejected,
+            **RATE_COORDINATOR.status(),
+        },
+    }
 
 
 @app.get("/api/bot/status", dependencies=[Depends(require_admin)])
@@ -1116,14 +1254,14 @@ def roles(guild_id: str):
 
 
 @app.get("/api/discord/guilds/{guild_id}/members/search", dependencies=[Depends(require_admin)])
-def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=25)):
+def search_members(guild_id: str, q: str = Query(..., min_length=2), limit: int = Query(10, ge=1, le=25)):
     # Search guild members for the dashboard mention picker.
     query = urllib.parse.urlencode({"query": q.strip(), "limit": limit})
     result = discord_cached_get(
         f"/guilds/{guild_id}/members/search?{query}",
         f"members:{guild_id}:{query}",
         persist=False,
-        ttl=30,
+        ttl=60,
     )
     data = result["data"]
     rows = []
@@ -1220,9 +1358,7 @@ def publish_onboarding(guild_id: str):
     ]
     if missing_language_roles:
         raise HTTPException(status_code=400, detail=f"Choose a role for: {', '.join(missing_language_roles)}")
-    channel = cached_channel(channel_id)
-    if str(channel.get("guild_id")) != str(guild_id):
-        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+    cached_guild_channel(guild_id, channel_id)
 
     payload = onboarding_panel_payload(guild_id, config)
     panel_message_id = str(config.get("panel_message_id") or "")
@@ -1266,9 +1402,7 @@ def save_welcome_automation(guild_id: str, payload: WelcomeAutomationPayload):
             validate_welcome_config(welcome, onboarding)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        channel = cached_channel(welcome["channel_id"])
-        if str(channel.get("guild_id")) != str(guild_id):
-            raise HTTPException(status_code=400, detail="Selected welcome channel does not belong to this server")
+        cached_guild_channel(guild_id, welcome["channel_id"])
 
     upsert_welcome_automation(guild_id, welcome)
     cancelled = 0
@@ -1467,9 +1601,7 @@ def publish_ticket_panel(guild_id: str):
     channel_id = str(settings.get("ticket_channel_id") or "")
     if not channel_id.isdigit():
         raise HTTPException(status_code=400, detail="Choose a ticket channel")
-    channel = cached_channel(channel_id)
-    if str(channel.get("guild_id")) != str(guild_id):
-        raise HTTPException(status_code=400, detail="Selected ticket channel does not belong to this server")
+    cached_guild_channel(guild_id, channel_id)
 
     payload = ticket_panel_payload(guild_id, settings)
     panel_message_id = str(settings.get("panel_message_id") or "")
@@ -1518,8 +1650,12 @@ def send_message(payload: MessagePayload):
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    channel = cached_channel(payload.channel_id)
-    guild_id = channel.get("guild_id", "dm")
+    if payload.guild_id.isdigit():
+        cached_guild_channel(payload.guild_id, payload.channel_id)
+        guild_id = payload.guild_id
+    else:
+        channel = cached_channel(payload.channel_id)
+        guild_id = channel.get("guild_id", "dm")
     body = {}
     record = {
         "channel_id": payload.channel_id,
@@ -1562,8 +1698,12 @@ def create_reaction_role(payload: ReactionRolePayload):
         raise HTTPException(status_code=400, detail="Channel ID must be numeric")
     if not payload.mappings:
         raise HTTPException(status_code=400, detail="Add at least one role mapping")
-    channel = cached_channel(payload.channel_id)
-    guild_id = channel.get("guild_id")
+    if payload.guild_id.isdigit():
+        cached_guild_channel(payload.guild_id, payload.channel_id)
+        guild_id = payload.guild_id
+    else:
+        channel = cached_channel(payload.channel_id)
+        guild_id = channel.get("guild_id")
     if not guild_id:
         raise HTTPException(status_code=400, detail="Reaction roles must be in a server channel")
 

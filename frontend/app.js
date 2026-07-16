@@ -18,6 +18,8 @@ const state = {
   botStatus: null,
   mentionDropdown: "",
   discordCooldownUntil: 0,
+  dashboardCooldownUntil: 0,
+  dashboardCooldownScope: "",
   discordCacheTime: "",
 };
 
@@ -40,10 +42,12 @@ const latestUpdates = [
   "Ticket intake lets members privately submit staff requests from Discord.",
 ];
 let memberSearchTimer = null;
+let memberSearchController = null;
 let guildsPromise = null;
 let initialLoadPromise = null;
 let guildLoadAttempted = false;
 let dashboardInitialized = false;
+const activeActions = new Set();
 
 const discordWriteButtonIds = [
   "sendMsgBtn", "updateMsgBtn", "postRRBtn", "updateRRBtn",
@@ -62,22 +66,34 @@ function toast(message) {
 }
 
 async function runAction(label, fn) {
+  if (activeActions.has(label)) {
+    toast(`${label} is already running.`);
+    return;
+  }
+  activeActions.add(label);
   try {
     await fn();
   } catch (err) {
     toast(`${label} failed: ${err.message}`);
+  } finally {
+    activeActions.delete(label);
   }
 }
 
 async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const { idempotencyKey, ...fetchOptions } = options;
+  const headers = { "Content-Type": "application/json", ...(fetchOptions.headers || {}) };
   if (state.accessToken) {
     headers.Authorization = `Bearer ${state.accessToken}`;
+  }
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    headers["X-Idempotency-Key"] = idempotencyKey || makeRequestId();
   }
   const response = await fetch(`${state.apiBase}${path}`, {
     credentials: "include",
     headers,
-    ...options,
+    ...fetchOptions,
   });
   if (!response.ok) {
     let detail = await response.text();
@@ -91,8 +107,15 @@ async function api(path, options = {}) {
     if (payload && typeof payload === "object") {
       const error = new Error(payload.message || "Request failed");
       error.code = payload.code || "request_failed";
-      error.retryAfterSeconds = Number(payload.retry_after_seconds || 0);
-      if (error.retryAfterSeconds) setDiscordCooldown(error.retryAfterSeconds);
+      error.scope = payload.scope || "";
+      error.retryAfterSeconds = Number(payload.retry_after_seconds || (response.status === 503 ? 60 : 0));
+      if (error.retryAfterSeconds) {
+        if (error.code.startsWith("discord_") || error.scope.startsWith("discord_")) {
+          setDiscordCooldown(error.retryAfterSeconds);
+        } else if (response.status === 429) {
+          setDashboardCooldown(error.retryAfterSeconds, error.scope);
+        }
+      }
       throw error;
     }
     throw new Error(String(payload));
@@ -126,6 +149,65 @@ function fillColors() {
   });
 }
 
+function makeRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function requireValue(value, message) {
+  if (!String(value ?? "").trim()) throw new Error(message);
+}
+
+function requireDiscordWriteReady() {
+  const remaining = Math.max(0, Math.ceil((state.discordCooldownUntil - Date.now()) / 1000));
+  if (remaining > 0) throw new Error(`Discord is cooling down. Try again in ${remaining}s.`);
+}
+
+function validateWelcomeForm() {
+  const data = collectWelcomeForm();
+  if (!data.enabled) return data;
+  requireValue(data.channel_id, "Choose a welcome channel.");
+  requireValue(data.welcome_content, "Welcome message is required.");
+  if (data.follow_up_enabled) {
+    requireValue(data.follow_up_content, "Follow-up message is required.");
+    const seconds = data.delay_value * ({ minutes: 60, hours: 3600, days: 86400 }[data.delay_unit] || 0);
+    if (!Number.isFinite(seconds) || seconds < 60 || seconds > 30 * 86400) {
+      throw new Error("Follow-up delay must be between 1 minute and 30 days.");
+    }
+  }
+  return data;
+}
+
+function validateOnboardingPublish() {
+  const data = collectOnboardingForm();
+  if (!data.enabled) throw new Error("Enable the private rules gate first.");
+  requireValue(data.channel_id, "Choose a rules channel.");
+  const enabled = Object.values(data.languages || {}).filter((item) => item.enabled);
+  if (!enabled.length) throw new Error("Enable at least one language.");
+  const incomplete = enabled.find((item) => !item.rules.trim() || !item.language_role_id);
+  if (incomplete) throw new Error(`Add rules text and a Fans Role for ${incomplete.label}.`);
+}
+
+function validateModerationRulesBeforeSave() {
+  const rules = state.moderation.rules || [];
+  const enabled = rules.filter((item) => item.enabled);
+  if (enabled.length > 25) throw new Error("A maximum of 25 rules can be enabled.");
+  const numbers = new Set();
+  for (const rule of rules) {
+    requireValue(rule.number, "Every rule needs a number.");
+    requireValue(rule.name, `Rule ${rule.number || "(unnumbered)"} needs a name.`);
+    requireValue(rule.reason, `Rule ${rule.number || "(unnumbered)"} needs a reason.`);
+    if (numbers.has(rule.number)) throw new Error(`Rule number ${rule.number} is duplicated.`);
+    numbers.add(rule.number);
+    if (rule.action === "timeout" && Number(rule.timeout_minutes || 0) <= 0) {
+      throw new Error(`Rule ${rule.number} needs timeout minutes.`);
+    }
+    if (rule.action === "remove_role" && !rule.remove_role_id) {
+      throw new Error(`Rule ${rule.number} needs a role to remove.`);
+    }
+  }
+}
+
 function unwrapDiscord(result) {
   if (!result || Array.isArray(result) || !("data" in result)) return result;
   const retryAfter = Number(result.retry_after_seconds || 0);
@@ -145,18 +227,30 @@ function setDiscordCooldown(seconds) {
   renderDiscordProtection();
 }
 
+function setDashboardCooldown(seconds, scope = "dashboard") {
+  state.dashboardCooldownUntil = Math.max(state.dashboardCooldownUntil, Date.now() + Number(seconds || 0) * 1000);
+  state.dashboardCooldownScope = scope || "dashboard";
+  renderDiscordProtection();
+}
+
 function renderDiscordProtection() {
   const banner = $("discordRateLimitBanner");
   if (!banner) return;
   const remaining = Math.max(0, Math.ceil((state.discordCooldownUntil - Date.now()) / 1000));
+  const dashboardRemaining = Math.max(0, Math.ceil((state.dashboardCooldownUntil - Date.now()) / 1000));
   const blocked = remaining > 0;
-  $("refreshBtn").disabled = blocked || !!initialLoadPromise;
+  const dashboardBlocked = dashboardRemaining > 0;
+  $("refreshBtn").disabled = blocked || dashboardBlocked || !!initialLoadPromise;
   discordWriteButtonIds.forEach((id) => {
-    if ($(id)) $(id).disabled = blocked;
+    if ($(id)) $(id).disabled = blocked || dashboardBlocked;
   });
-  if (blocked || state.discordCacheTime) {
+  if (dashboardBlocked || blocked || state.discordCacheTime) {
     const cached = state.discordCacheTime ? ` Showing cached data from ${new Date(state.discordCacheTime).toLocaleString()}.` : "";
-    banner.textContent = `Discord is temporarily limiting requests. Try again in ${remaining}s.${cached}`;
+    banner.textContent = dashboardBlocked
+      ? `Dashboard requests are temporarily limited (${state.dashboardCooldownScope}). Try again in ${dashboardRemaining}s.`
+      : blocked
+        ? `Discord is temporarily limiting requests. Try again in ${remaining}s.${cached}`
+        : `Showing cached Discord data from ${new Date(state.discordCacheTime).toLocaleString()}. Local settings can still be saved; use Refresh when Discord is available.`;
     banner.classList.remove("hidden");
   } else {
     banner.classList.add("hidden");
@@ -623,6 +717,7 @@ async function loadOnboarding() {
 
 async function saveOnboarding() {
   const guildId = $("obGuild").value;
+  requireValue(guildId, "Choose a server first.");
   const config = await api(`/api/onboarding/${guildId}`, {
     method: "PUT",
     body: JSON.stringify(collectOnboardingForm()),
@@ -633,6 +728,8 @@ async function saveOnboarding() {
 }
 
 async function publishOnboarding() {
+  validateOnboardingPublish();
+  requireDiscordWriteReady();
   await saveOnboarding();
   const guildId = $("obGuild").value;
   const result = await api(`/api/onboarding/${guildId}/publish`, { method: "POST" });
@@ -721,7 +818,7 @@ async function saveWelcomeAutomation() {
   if (!guildId) return toast("Choose a server first.");
   const config = await api(`/api/welcome-automation/${guildId}`, {
     method: "PUT",
-    body: JSON.stringify(collectWelcomeForm()),
+    body: JSON.stringify(validateWelcomeForm()),
   });
   applyWelcomeForm(config);
   const cancelled = Number(config.cancelled_jobs || 0);
@@ -854,6 +951,11 @@ function addOrUpdateRule() {
   const existing = index >= 0 ? state.moderation.rules[index] : {};
   const rule = collectRuleForm(existing);
   if (!rule.number || !rule.name || !rule.reason) return toast("Rule number, name, and reason are required.");
+  if (rule.action === "timeout" && rule.timeout_minutes <= 0) return toast("Timeout rules need timeout minutes.");
+  if (rule.action === "remove_role" && !rule.remove_role_id) return toast("Remove-role rules need a role.");
+  if ((state.moderation.rules || []).some((item, itemIndex) => item.number === rule.number && itemIndex !== index)) {
+    return toast(`Rule number ${rule.number} is already used.`);
+  }
   if (index >= 0) state.moderation.rules[index] = rule;
   else state.moderation.rules.push(rule);
   resetRuleForm();
@@ -934,6 +1036,8 @@ function applyCaseRuleTemplate() {
 
 async function saveModerationRules() {
   const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
+  validateModerationRulesBeforeSave();
   const result = await api(`/api/moderation/${guildId}/rules`, { method: "PUT", body: JSON.stringify({ rules: state.moderation.rules || [] }) });
   state.moderation.rules = result.rules || [];
   resetRuleForm();
@@ -958,9 +1062,15 @@ function renderEvidencePreview() {
 
 async function fetchModerationEvidence() {
   const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
+  const evidenceUrl = $("modEvidenceUrl").value.trim();
+  requireValue(evidenceUrl, "Paste a Discord Message Link first.");
+  if (!/^https:\/\/(?:canary\.|ptb\.)?(?:discord\.com|discordapp\.com)\/channels\/\d+\/\d+\/\d+\/?$/i.test(evidenceUrl)) {
+    throw new Error("Use a complete Discord Message Link from this server.");
+  }
   const result = await api(`/api/moderation/${guildId}/evidence/resolve`, {
     method: "POST",
-    body: JSON.stringify({ message_url: $("modEvidenceUrl").value.trim() }),
+    body: JSON.stringify({ message_url: evidenceUrl }),
   });
   state.moderation.evidence = result.evidence;
   $("modTargetId").value = result.evidence.author_id || "";
@@ -972,6 +1082,7 @@ async function fetchModerationEvidence() {
 
 async function saveModerationSettings() {
   const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
   await api(`/api/moderation/${guildId}/settings`, {
     method: "PUT",
     body: JSON.stringify({
@@ -986,19 +1097,29 @@ async function saveModerationSettings() {
 async function createModerationCase() {
   const guildId = $("modGuild").value;
   const selectedRule = (state.moderation.rules || []).find((item) => item.rule_id === $("modRuleTemplate").value);
+  const targetId = $("modTargetId").value.trim();
+  const reason = $("modReason").value.trim();
+  const action = $("modAction").value;
+  requireValue(guildId, "Choose a server first.");
+  if (!/^\d+$/.test(targetId)) throw new Error("Target User ID must be numeric.");
+  requireValue(reason, "Reason is required.");
+  if (action === "probation" && !$("modProbationRole").value) throw new Error("Choose a probation role.");
+  if (action === "timeout" && Number($("modTimeoutMinutes").value || 0) <= 0) throw new Error("Timeout minutes must be greater than 0.");
+  if (action === "remove_role" && !$("modRemoveRole").value) throw new Error("Choose a role to remove.");
+  if (!["warning", "note"].includes(action)) requireDiscordWriteReady();
   const result = await api("/api/moderation/cases", {
     method: "POST",
     body: JSON.stringify({
       guild_id: guildId,
-      target_user_id: $("modTargetId").value.trim(),
+      target_user_id: targetId,
       target_display: $("modTargetDisplay").value.trim(),
       rule_id: selectedRule?.rule_id || "",
       rule_name: selectedRule?.name || $("modViolationType").value.trim(),
       rule_number: $("modRuleNumber").value.trim(),
       violation_type: $("modViolationType").value.trim(),
       severity: $("modSeverity").value,
-      action: $("modAction").value,
-      reason: $("modReason").value.trim(),
+      action,
+      reason,
       evidence_url: $("modEvidenceUrl").value.trim(),
       evidence_snapshot: state.moderation.evidence || {},
       notes: $("modNotes").value.trim(),
@@ -1108,6 +1229,7 @@ function renderTickets(rows) {
 
 async function saveTicketSettings() {
   const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
   const settings = await api(`/api/tickets/${guildId}/settings`, {
     method: "PUT",
     body: JSON.stringify(collectTicketSettings()),
@@ -1118,6 +1240,12 @@ async function saveTicketSettings() {
 }
 
 async function publishTicketPanel() {
+  const settings = collectTicketSettings();
+  requireValue(settings.ticket_channel_id, "Choose a ticket channel.");
+  requireValue(settings.panel_title, "Ticket panel title is required.");
+  requireValue(settings.panel_description, "Ticket panel description is required.");
+  requireValue(settings.button_label, "Ticket button label is required.");
+  requireDiscordWriteReady();
   await saveTicketSettings();
   const guildId = $("modGuild").value;
   const result = await api(`/api/tickets/${guildId}/publish`, { method: "POST" });
@@ -1354,20 +1482,26 @@ async function searchMembers(scope = "msg") {
   const config = mentionConfig(scope);
   const guildId = config.guildId;
   const query = $(config.memberInput).value.trim();
-  if (!guildId || !query) {
+  if (!guildId || query.length < 2) {
     state.members[guildId] = [];
-    renderMemberMentionResults(scope, []);
+    renderMemberMentionResults(scope, [], query ? "Type at least 2 characters." : "");
     openMentionDropdown(`${scope}-member`);
     config.render();
     return;
   }
+  if (memberSearchController) memberSearchController.abort();
+  memberSearchController = new AbortController();
   try {
-    const rows = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`));
+    const rows = unwrapDiscord(await api(
+      `/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`,
+      { signal: memberSearchController.signal },
+    ));
     state.members[guildId] = rows;
     renderMemberMentionResults(scope, rows);
     openMentionDropdown(`${scope}-member`);
     config.render();
   } catch (err) {
+    if (err.name === "AbortError") return;
     state.members[guildId] = [];
     renderMemberMentionResults(scope, [], "Member search unavailable");
     openMentionDropdown(`${scope}-member`);
@@ -1734,7 +1868,7 @@ function wireEvents() {
   $("mentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
     openMentionDropdown("msg-member");
-    memberSearchTimer = setTimeout(searchMembers, 250);
+    memberSearchTimer = setTimeout(searchMembers, 500);
   });
   $("mentionChannelSearch").addEventListener("focus", () => {
     renderChannelMentionResults();
@@ -1771,7 +1905,7 @@ function wireEvents() {
   $("rrMentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
     openMentionDropdown("rr-member");
-    memberSearchTimer = setTimeout(() => searchMembers("rr"), 250);
+    memberSearchTimer = setTimeout(() => searchMembers("rr"), 500);
   });
   $("obGuild").addEventListener("change", async () => {
     await runAction("Load onboarding server", refreshOnboardingControls);
@@ -1810,9 +1944,14 @@ function wireEvents() {
   $("refreshTicketsBtn").addEventListener("click", () => runAction("Refresh tickets", loadTickets));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
+    requireDiscordWriteReady();
+    requireValue($("msgGuild").value, "Choose a server first.");
+    requireValue($("msgChannel").value, "Choose a channel first.");
+    requireValue($("msgContent").value, "Message cannot be empty.");
     const result = await api("/api/messages", {
       method: "POST",
       body: JSON.stringify({
+        guild_id: $("msgGuild").value,
         channel_id: $("msgChannel").value,
         content: $("msgContent").value,
         use_embed: $("msgEmbed").checked,
@@ -1830,10 +1969,13 @@ function wireEvents() {
 
   $("updateMsgBtn").addEventListener("click", () => runAction("Update message", async () => {
     if (!state.editingMessage) return;
+    requireDiscordWriteReady();
+    requireValue($("msgContent").value, "Message cannot be empty.");
     const { guildId, messageId } = state.editingMessage;
     const result = await api(`/api/messages/${guildId}/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
+        guild_id: guildId,
         channel_id: $("msgChannel").value,
         content: $("msgContent").value,
         use_embed: $("msgEmbed").checked,
@@ -1866,9 +2008,15 @@ function wireEvents() {
   });
 
   $("postRRBtn").addEventListener("click", () => runAction("Post role panel", async () => {
+    requireDiscordWriteReady();
+    requireValue($("rrGuild").value, "Choose a server first.");
+    requireValue($("rrChannel").value, "Choose a channel first.");
+    requireValue($("rrDesc").value, "Panel description is required.");
+    if (!state.mappings.length) throw new Error("Add at least one role mapping.");
     const result = await api("/api/reaction-roles", {
       method: "POST",
       body: JSON.stringify({
+        guild_id: $("rrGuild").value,
         channel_id: $("rrChannel").value,
         panel_name: $("rrPanelName").value,
         title: $("rrTitle").value,
@@ -1888,10 +2036,14 @@ function wireEvents() {
 
   $("updateRRBtn").addEventListener("click", () => runAction("Update role panel", async () => {
     if (!state.editingRolePanel) return;
+    requireDiscordWriteReady();
+    requireValue($("rrDesc").value, "Panel description is required.");
+    if (!state.mappings.length) throw new Error("Add at least one role mapping.");
     const { guildId, messageId } = state.editingRolePanel;
     const result = await api(`/api/reaction-roles/${guildId}/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
+        guild_id: guildId,
         channel_id: $("rrChannel").value,
         panel_name: $("rrPanelName").value,
         title: $("rrTitle").value,

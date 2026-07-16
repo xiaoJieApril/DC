@@ -1,7 +1,9 @@
+import asyncio
 import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
@@ -32,9 +34,32 @@ from welcome_automation import (
     onboarding_completion_role_ids,
     render_welcome_template,
 )
+from request_limits import SharedRateCoordinator
 
 load_dotenv()
 init_db()
+
+BASE_DIR = Path(__file__).resolve().parent
+RATE_COORDINATOR = SharedRateCoordinator(BASE_DIR / "data" / "request_limits.sqlite3")
+BOT_ACTION_INFLIGHT = set()
+BOT_ACTION_LOCK = asyncio.Lock()
+MEMBER_FETCHES = {}
+MEMBER_NEGATIVE_CACHE = {}
+REACTION_PENDING = {}
+REACTION_TASKS = {}
+
+
+async def await_shared_discord_permit():
+    try:
+        limit = max(1, int(os.getenv("DISCORD_SHARED_REQUESTS_PER_SECOND", "25")))
+    except (TypeError, ValueError):
+        limit = 25
+    while True:
+        allowed, retry_after = RATE_COORDINATOR.check_window("discord_api_global_budget", limit, 1)
+        if allowed:
+            return
+        RATE_COORDINATOR.increment("shared_discord_budget_waited")
+        await asyncio.sleep(max(0.1, retry_after))
 
 COLOR_MAP = {
     "blurple": 0x5865F2,
@@ -110,8 +135,8 @@ async def apply_role_selection(interaction, entry, selected_role_ids):
 
     mapped_role_ids = set(entry.get("mappings", {}).values())
     selected_role_ids = set(selected_role_ids)
-    added = []
-    removed = []
+    roles_to_add = []
+    roles_to_remove = []
     skipped = []
 
     for role_id in mapped_role_ids:
@@ -132,17 +157,31 @@ async def apply_role_selection(interaction, entry, selected_role_ids):
         has_role = role in member.roles
         should_have = role_id in selected_role_ids
 
+        if should_have and not has_role:
+            roles_to_add.append(role)
+        elif not should_have and has_role:
+            roles_to_remove.append(role)
+
+    added = []
+    removed = []
+    if roles_to_add:
         try:
-            if should_have and not has_role:
-                await member.add_roles(role, reason="Dropdown role selection")
-                added.append(role.name)
-            elif not should_have and has_role:
-                await member.remove_roles(role, reason="Dropdown role selection")
-                removed.append(role.name)
+            await await_shared_discord_permit()
+            await member.add_roles(*roles_to_add, reason="Dropdown role selection")
+            added = [role.name for role in roles_to_add]
         except discord.Forbidden:
-            skipped.append(f"{role.name}: missing permission")
-        except discord.HTTPException as exc:
-            skipped.append(f"{role.name}: {exc}")
+            skipped.append("could not add roles: missing permission")
+        except discord.HTTPException:
+            skipped.append("could not add roles right now")
+    if roles_to_remove:
+        try:
+            await await_shared_discord_permit()
+            await member.remove_roles(*roles_to_remove, reason="Dropdown role selection")
+            removed = [role.name for role in roles_to_remove]
+        except discord.Forbidden:
+            skipped.append("could not remove roles: missing permission")
+        except discord.HTTPException:
+            skipped.append("could not remove roles right now")
 
     parts = []
     if added:
@@ -171,22 +210,63 @@ async def apply_role_button(interaction, role_id):
     if role in member.roles:
         return f"You already have **{role.name}**."
     try:
+        await await_shared_discord_permit()
         await member.add_roles(role, reason="One-time role button")
         return f"Added **{role.name}**."
     except discord.Forbidden:
         return f"I do not have permission to give **{role.name}**."
-    except discord.HTTPException as exc:
-        return f"Could not give **{role.name}**: {exc}"
+    except discord.HTTPException:
+        return f"Discord could not give **{role.name}** right now. Please try again later."
 
 
 async def fetch_member(guild, user_id):
     member = guild.get_member(user_id)
     if member:
         return member
-    try:
-        return await guild.fetch_member(user_id)
-    except discord.NotFound:
+    key = (str(guild.id), str(user_id))
+    if MEMBER_NEGATIVE_CACHE.get(key, 0) > time.time():
         return None
+    existing = MEMBER_FETCHES.get(key)
+    if existing:
+        RATE_COORDINATOR.increment("bot_member_fetch_merged")
+        return await asyncio.shield(existing)
+
+    async def run():
+        try:
+            await await_shared_discord_permit()
+            return await guild.fetch_member(user_id)
+        except discord.NotFound:
+            MEMBER_NEGATIVE_CACHE[key] = time.time() + 30
+            return None
+
+    task = asyncio.create_task(run())
+    MEMBER_FETCHES[key] = task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if MEMBER_FETCHES.get(key) is task:
+            MEMBER_FETCHES.pop(key, None)
+
+
+async def begin_bot_action(interaction, family, cooldown_seconds, resource=""):
+    key = f"bot:{interaction.guild.id}:{interaction.user.id}:{family}:{resource}"
+    async with BOT_ACTION_LOCK:
+        if key in BOT_ACTION_INFLIGHT:
+            RATE_COORDINATOR.increment("bot_inflight_rejected")
+            return None, 1
+        allowed, retry_after = RATE_COORDINATOR.acquire(key, cooldown_seconds)
+        if not allowed:
+            RATE_COORDINATOR.increment("bot_cooldown_rejected")
+            return None, retry_after
+        BOT_ACTION_INFLIGHT.add(key)
+    return key, 0
+
+
+async def finish_bot_action(key):
+    if not key:
+        return
+    async with BOT_ACTION_LOCK:
+        BOT_ACTION_INFLIGHT.discard(key)
 
 
 def emoji_key(emoji: discord.PartialEmoji) -> str:
@@ -278,6 +358,7 @@ async def send_ticket_log(guild, ticket, channel_id):
     if not channel:
         return
     try:
+        await await_shared_discord_permit()
         await channel.send(embed=ticket_log_embed(ticket), allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException as exc:
         print(f"[TICKET] Could not send ticket log: {exc}")
@@ -543,11 +624,18 @@ class TicketModal(discord.ui.Modal):
         if not ticket["subject"] or not ticket["content"]:
             await interaction.response.send_message("Subject and content are required.", ephemeral=True)
             return
-
-        # Store the ticket before staff notification so the dashboard is the source of truth.
-        append_ticket(self.guild_id, ticket)
-        await send_ticket_log(interaction.guild, ticket, settings.get("log_channel_id"))
-        await interaction.response.send_message(f"Ticket **{ticket['ticket_id']}** submitted. Staff can review it now.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        action_key, retry_after = await begin_bot_action(interaction, "ticket_submit", 3, self.guild_id)
+        if not action_key:
+            await interaction.followup.send(f"Your ticket is already being handled. Please wait {retry_after}s.", ephemeral=True)
+            return
+        try:
+            # Store before staff notification so the dashboard remains the source of truth.
+            append_ticket(self.guild_id, ticket)
+            await send_ticket_log(interaction.guild, ticket, settings.get("log_channel_id"))
+            await interaction.followup.send(f"Ticket **{ticket['ticket_id']}** submitted. Staff can review it now.", ephemeral=True)
+        finally:
+            await finish_bot_action(action_key)
 
 
 def select_emoji_value(value):
@@ -754,13 +842,14 @@ async def apply_onboarding_agreement(interaction, entry, language, guild=None):
         if not ok:
             return reason
     try:
+        await await_shared_discord_permit()
         await member.add_roles(*roles_to_add, reason=f"Accepted {language} onboarding rules")
         names = ", ".join(f"**{target.name}**" for target in roles_to_add)
         return f"Welcome! {names} has been added."
     except discord.Forbidden:
         return f"I do not have permission to give **{role.name}**."
-    except discord.HTTPException as exc:
-        return f"Could not give **{role.name}**: {exc}"
+    except discord.HTTPException:
+        return f"Discord could not update **{role.name}** right now. Please try again later."
 
 
 intents = discord.Intents.default()
@@ -977,6 +1066,7 @@ async def on_interaction(interaction: discord.Interaction):
     if not (is_role_interaction or is_onboarding_interaction or is_ticket_interaction):
         return
 
+    action_key = None
     try:
         if not interaction.guild:
             await interaction.response.send_message("This action only works inside a server.", ephemeral=True)
@@ -991,6 +1081,16 @@ async def on_interaction(interaction: discord.Interaction):
             return
 
         await interaction.response.defer(ephemeral=True)
+        if custom_id.startswith("onboarding_language:"):
+            action_key, retry_after = await begin_bot_action(interaction, "rules_view", 2, custom_id)
+        else:
+            action_key, retry_after = await begin_bot_action(interaction, "role_mutation", 3, custom_id)
+        if not action_key:
+            await interaction.followup.send(
+                f"This action is already being handled. Please wait {retry_after}s and try again.",
+                ephemeral=True,
+            )
+            return
         config = load_config()
         if custom_id.startswith("onboarding_language:"):
             entry = get_onboarding_entry(config, interaction.guild.id)
@@ -1041,84 +1141,92 @@ async def on_interaction(interaction: discord.Interaction):
         print(f"[INTERACTION] Component interaction failed: {exc}")
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(f"Action failed: {exc}", ephemeral=True)
+                await interaction.followup.send("This action could not be completed right now. Please try again later.", ephemeral=True)
             else:
-                await interaction.response.send_message(f"Action failed: {exc}", ephemeral=True)
+                await interaction.response.send_message("This action could not be completed right now. Please try again later.", ephemeral=True)
         except Exception as nested_exc:
             print(f"[INTERACTION] Could not report interaction failure: {nested_exc}")
+    finally:
+        await finish_bot_action(action_key)
 
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+async def queue_reaction_change(payload, should_have):
     if not payload.guild_id or payload.user_id == bot.user.id:
         return
-
     config = load_config()
     entry = get_rr_entry(config, payload.guild_id, payload.message_id)
     if not entry:
         return
-
     role_id = entry.get("mappings", {}).get(emoji_key(payload.emoji))
     if not role_id:
         return
+    key = (str(payload.guild_id), str(payload.user_id), str(role_id))
+    if key in REACTION_PENDING or key in REACTION_TASKS:
+        RATE_COORDINATOR.increment("bot_reaction_merged")
+    REACTION_PENDING[key] = {
+        "guild_id": payload.guild_id,
+        "user_id": payload.user_id,
+        "role_id": role_id,
+        "member": getattr(payload, "member", None),
+        "should_have": bool(should_have),
+    }
+    if key not in REACTION_TASKS:
+        REACTION_TASKS[key] = asyncio.create_task(flush_reaction_change(key))
 
-    guild = bot.get_guild(payload.guild_id)
-    if not guild:
-        return
 
-    role = guild.get_role(int(role_id))
-    member = payload.member or await fetch_member(guild, payload.user_id)
-    if not role or not member or member.bot:
-        return
-
-    ok, reason = bot_can_manage_role(guild, role)
-    if not ok:
-        print(f"[RR] Cannot add {role.name}: {reason}")
-        return
-
+async def flush_reaction_change(key):
     try:
-        await member.add_roles(role, reason="Reaction role added")
-        print(f"[RR] Gave {role.name} to {member.display_name}")
-    except discord.Forbidden:
-        print(f"[RR] Missing permission to give {role.name}")
-    except discord.HTTPException as exc:
-        print(f"[RR] Failed to give {role.name}: {exc}")
+        while True:
+            await asyncio.sleep(0.75)
+            state = REACTION_PENDING.pop(key, None)
+            if not state:
+                return
+            allowed, retry_after = RATE_COORDINATOR.acquire(f"bot:reaction:{':'.join(key)}", 1)
+            if not allowed:
+                RATE_COORDINATOR.increment("bot_reaction_cooldown")
+                REACTION_PENDING.setdefault(key, state)
+                await asyncio.sleep(retry_after)
+                continue
+
+            guild = bot.get_guild(state["guild_id"])
+            if not guild:
+                continue
+            role = guild.get_role(int(state["role_id"]))
+            member = state.get("member") or await fetch_member(guild, state["user_id"])
+            if not role or not member or member.bot:
+                continue
+            ok, reason = bot_can_manage_role(guild, role)
+            if not ok:
+                print(f"[RR] Cannot update {role.name}: {reason}")
+                continue
+            try:
+                if state["should_have"] and role not in member.roles:
+                    await await_shared_discord_permit()
+                    await member.add_roles(role, reason="Reaction role added")
+                    print(f"[RR] Gave {role.name} to {member.display_name}")
+                elif not state["should_have"] and role in member.roles:
+                    await await_shared_discord_permit()
+                    await member.remove_roles(role, reason="Reaction role removed")
+                    print(f"[RR] Removed {role.name} from {member.display_name}")
+            except discord.Forbidden:
+                print(f"[RR] Missing permission to update {role.name}")
+            except discord.HTTPException:
+                print(f"[RR] Discord could not update {role.name} right now")
+            if key not in REACTION_PENDING:
+                return
+    finally:
+        REACTION_TASKS.pop(key, None)
+        if key in REACTION_PENDING and key not in REACTION_TASKS:
+            REACTION_TASKS[key] = asyncio.create_task(flush_reaction_change(key))
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    await queue_reaction_change(payload, True)
 
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    if not payload.guild_id or payload.user_id == bot.user.id:
-        return
-
-    config = load_config()
-    entry = get_rr_entry(config, payload.guild_id, payload.message_id)
-    if not entry:
-        return
-
-    role_id = entry.get("mappings", {}).get(emoji_key(payload.emoji))
-    if not role_id:
-        return
-
-    guild = bot.get_guild(payload.guild_id)
-    if not guild:
-        return
-
-    role = guild.get_role(int(role_id))
-    member = await fetch_member(guild, payload.user_id)
-    if not role or not member or member.bot:
-        return
-
-    ok, reason = bot_can_manage_role(guild, role)
-    if not ok:
-        print(f"[RR] Cannot remove {role.name}: {reason}")
-        return
-
-    try:
-        await member.remove_roles(role, reason="Reaction role removed")
-        print(f"[RR] Removed {role.name} from {member.display_name}")
-    except discord.Forbidden:
-        print(f"[RR] Missing permission to remove {role.name}")
-    except discord.HTTPException as exc:
-        print(f"[RR] Failed to remove {role.name}: {exc}")
+    await queue_reaction_change(payload, False)
 
 
 @bot.slash_command(name="sendmessage", description="Send a plain message or embed")

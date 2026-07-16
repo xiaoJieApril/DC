@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,17 +24,21 @@ class DiscordGuardError(Exception):
 
 
 class DiscordGuard:
-    def __init__(self, base_url, token_getter, cache_file=None, session=None, clock=None, sleeper=None):
+    def __init__(self, base_url, token_getter, cache_file=None, session=None, clock=None, sleeper=None, request_permit=None):
         self.base_url = base_url.rstrip("/")
         self.token_getter = token_getter
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "DiscordBot (DC-Gra-vt-Dashboard, 1.0)"})
         self.clock = clock or time.time
         self.sleeper = sleeper or time.sleep
+        self.request_permit = request_permit
         self.cache_ttl = self._env_int("DISCORD_CACHE_TTL_SECONDS", 300)
         self.stale_max = self._env_int("DISCORD_CACHE_STALE_SECONDS", 86400)
         self.cloudflare_initial = self._env_int("DISCORD_CLOUDFLARE_COOLDOWN_SECONDS", 900)
         self.cloudflare_max = self._env_int("DISCORD_CLOUDFLARE_MAX_COOLDOWN_SECONDS", 3600)
+        self.negative_ttl = self._env_int("DISCORD_NEGATIVE_CACHE_SECONDS", 60)
+        self.auth_cooldown = self._env_int("DISCORD_AUTH_COOLDOWN_SECONDS", 300)
+        self.upstream_queue_timeout = self._env_int("DISCORD_UPSTREAM_QUEUE_TIMEOUT_SECONDS", 3)
         self.cache_file = Path(cache_file) if cache_file else None
         self._lock = threading.RLock()
         self._inflight = {}
@@ -43,6 +48,13 @@ class DiscordGuard:
         self._cloudflare_failures = 0
         self._rate_limit_count = 0
         self._last_success = 0.0
+        self._last_429 = 0.0
+        self._route_bucket_ids = {}
+        self._buckets = {}
+        self._negative_cache = {}
+        self._invalid_requests = deque()
+        self._auth_until = 0.0
+        self._upstream = threading.BoundedSemaphore(self._env_int("DISCORD_MAX_CONCURRENT_REQUESTS", 2))
 
     @staticmethod
     def _env_int(name, default):
@@ -80,6 +92,10 @@ class DiscordGuard:
                 "retry_after_seconds": remaining,
                 "last_success_at": self._iso(self._last_success) if self._last_success else None,
                 "rate_limit_count": self._rate_limit_count,
+                "active_buckets": sum(1 for item in self._buckets.values() if item.get("until", 0) > now),
+                "auth_retry_after_seconds": max(0, int(self._auth_until - now + 0.999)),
+                "invalid_requests_10m": self._invalid_request_count(now),
+                "last_429_at": self._iso(self._last_429) if self._last_429 else None,
             }
 
     @staticmethod
@@ -104,6 +120,12 @@ class DiscordGuard:
             "cached_at": self._iso(float(entry["cached_at"])),
             "retry_after_seconds": self.status()["retry_after_seconds"],
         }
+
+    def peek(self, cache_key, allow_stale=True, ttl=None):
+        """Read an existing selector cache without making an upstream request."""
+        with self._lock:
+            cached = self._cache_entry(cache_key, allow_stale=allow_stale, ttl=ttl)
+            return self._result(*cached) if cached else None
 
     def get(self, path, cache_key=None, persist=False, ttl=None):
         key = cache_key or f"GET:{path}"
@@ -158,21 +180,29 @@ class DiscordGuard:
         return self._request(method.upper(), path, payload=payload, retry_get=False)
 
     def _request(self, method, path, payload=None, retry_get=False):
-        circuit = self.status()
-        if circuit["state"] == "open":
-            raise DiscordGuardError(503, "Discord is temporarily rate limited. Try again later.", circuit["retry_after_seconds"], "discord_circuit_open")
         attempts = 2 if method == "GET" and retry_get else 1
         for attempt in range(attempts):
+            self._preflight(method, path, payload)
+            if self.request_permit:
+                allowed, retry_after = self.request_permit()
+                if not allowed:
+                    raise DiscordGuardError(429, "Discord requests are being paced to prevent overload.", retry_after, "discord_shared_budget")
+            if not self._upstream.acquire(timeout=self.upstream_queue_timeout):
+                raise DiscordGuardError(503, "Discord is busy. Please try again shortly.", 1, "discord_upstream_busy")
             try:
-                response = self.session.request(
-                    method,
-                    f"{self.base_url}{path}",
-                    headers={"Authorization": f"Bot {self.token_getter()}", "Content-Type": "application/json"},
-                    json=payload,
-                    timeout=15,
-                )
-            except requests.RequestException as exc:
-                raise DiscordGuardError(503, "Discord is temporarily unreachable.", code="discord_unreachable") from exc
+                try:
+                    response = self.session.request(
+                        method,
+                        f"{self.base_url}{path}",
+                        headers={"Authorization": f"Bot {self.token_getter()}", "Content-Type": "application/json"},
+                        json=payload,
+                        timeout=15,
+                    )
+                except requests.RequestException as exc:
+                    raise DiscordGuardError(503, "Discord is temporarily unreachable.", code="discord_unreachable") from exc
+            finally:
+                self._upstream.release()
+            self._record_bucket(method, path, response)
             if response.status_code < 400:
                 with self._lock:
                     self._last_success = self.clock()
@@ -185,17 +215,32 @@ class DiscordGuard:
                     raise DiscordGuardError(502, "Discord returned an invalid response.", code="discord_invalid_response") from exc
             if response.status_code == 429:
                 retry_after, cloudflare, ray_id = self._rate_limit_details(response)
+                scope = self._header(response, "X-RateLimit-Scope").lower()
+                is_global = self._header(response, "X-RateLimit-Global").lower() == "true"
+                try:
+                    body = response.json()
+                    is_global = is_global or bool(isinstance(body, dict) and body.get("global"))
+                except ValueError:
+                    pass
                 with self._lock:
                     self._rate_limit_count += 1
+                    self._last_429 = self.clock()
+                    if scope != "shared":
+                        self._record_invalid(self.clock())
                     if cloudflare:
                         self._cloudflare_failures += 1
                         retry_after = min(self.cloudflare_max, self.cloudflare_initial * (2 ** (self._cloudflare_failures - 1)))
-                    self._circuit_until = max(self._circuit_until, self.clock() + retry_after)
+                    if cloudflare or is_global or scope == "global":
+                        self._circuit_until = max(self._circuit_until, self.clock() + retry_after)
+                    else:
+                        bucket_key = self._bucket_key(method, path)
+                        self._buckets.setdefault(bucket_key, {})["until"] = self.clock() + retry_after
                 LOG.warning("Discord rate limit method=%s route=%s retry_after=%ss cloudflare=%s ray_id=%s", method, path.split("?")[0], retry_after, cloudflare, ray_id or "-")
                 if method == "GET" and attempt == 0 and not cloudflare and retry_after > 0 and retry_after <= 5:
                     self.sleeper(retry_after)
                     with self._lock:
                         self._circuit_until = 0
+                        self._buckets.pop(self._bucket_key(method, path), None)
                     continue
                 raise DiscordGuardError(429, "Discord is temporarily rate limited. Try again later.", retry_after, "discord_rate_limited")
             message = "Discord rejected the request."
@@ -205,8 +250,91 @@ class DiscordGuard:
                     message = str(body["message"])
             except ValueError:
                 pass
+            if response.status_code in (401, 403, 404):
+                now = self.clock()
+                with self._lock:
+                    self._record_invalid(now)
+                    if response.status_code == 401:
+                        self._auth_until = max(self._auth_until, now + self.auth_cooldown)
+                    else:
+                        self._negative_cache[self._negative_key(method, path, payload)] = {
+                            "until": now + self.negative_ttl,
+                            "status": response.status_code,
+                            "message": message,
+                        }
             LOG.warning("Discord error method=%s route=%s status=%s", method, path.split("?")[0], response.status_code)
             raise DiscordGuardError(response.status_code, message)
+
+    def _preflight(self, method, path, payload):
+        now = self.clock()
+        with self._lock:
+            if self._auth_until > now:
+                retry = max(1, int(self._auth_until - now + 0.999))
+                raise DiscordGuardError(503, "Discord authentication is temporarily paused.", retry, "discord_auth_paused")
+            circuit = self.status()
+            if circuit["state"] == "open":
+                raise DiscordGuardError(503, "Discord is temporarily rate limited. Try again later.", circuit["retry_after_seconds"], "discord_circuit_open")
+            bucket = self._buckets.get(self._bucket_key(method, path), {})
+            if bucket.get("until", 0) > now:
+                retry = max(1, int(bucket["until"] - now + 0.999))
+                raise DiscordGuardError(429, "This Discord route is cooling down.", retry, "discord_bucket_cooldown")
+            negative = self._negative_cache.get(self._negative_key(method, path, payload))
+            if negative and negative["until"] > now:
+                raise DiscordGuardError(negative["status"], negative["message"], code="discord_negative_cache")
+
+    @staticmethod
+    def _header(response, name):
+        for key, value in (response.headers or {}).items():
+            if str(key).lower() == name.lower():
+                return str(value or "")
+        return ""
+
+    @staticmethod
+    def _route_key(method, path):
+        clean = path.split("?", 1)[0]
+        return f"{method.upper()}:{clean}"
+
+    def _bucket_key(self, method, path):
+        route = self._route_key(method, path)
+        return self._route_bucket_ids.get(route, route)
+
+    @staticmethod
+    def _negative_key(method, path, payload):
+        payload_text = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str) if payload is not None else ""
+        return f"{method.upper()}:{path}:{payload_text}"
+
+    def _record_bucket(self, method, path, response):
+        bucket_id = self._header(response, "X-RateLimit-Bucket")
+        remaining = self._header(response, "X-RateLimit-Remaining")
+        reset_after = self._header(response, "X-RateLimit-Reset-After")
+        if not bucket_id:
+            return
+        major_match = re.search(r"/(channels|guilds|webhooks)/(\d+)", path.split("?", 1)[0])
+        if major_match:
+            bucket_id = f"{bucket_id}:{major_match.group(1)}:{major_match.group(2)}"
+        route = self._route_key(method, path)
+        with self._lock:
+            self._route_bucket_ids[route] = bucket_id
+            state = self._buckets.setdefault(bucket_id, {})
+            try:
+                state["remaining"] = int(float(remaining))
+            except (TypeError, ValueError):
+                pass
+            try:
+                if state.get("remaining") == 0:
+                    state["until"] = self.clock() + max(0.001, float(reset_after))
+            except (TypeError, ValueError):
+                pass
+
+    def _record_invalid(self, now):
+        self._invalid_requests.append(now)
+        self._invalid_request_count(now)
+
+    def _invalid_request_count(self, now):
+        cutoff = now - 600
+        while self._invalid_requests and self._invalid_requests[0] <= cutoff:
+            self._invalid_requests.popleft()
+        return len(self._invalid_requests)
 
     def _rate_limit_details(self, response):
         text = response.text or ""

@@ -70,6 +70,19 @@ class DiscordGuardTests(unittest.TestCase):
         self.assertEqual(first["data"], second["data"])
         self.assertEqual(len(session.calls), 1)
 
+    def test_peek_reads_persistent_selector_cache_without_upstream_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache_file = Path(directory) / "discord_cache.json"
+            cache_file.write_text(
+                json.dumps({"channels:1": {"data": [{"id": "10"}], "cached_at": 1000}}),
+                encoding="utf-8",
+            )
+            session = FakeSession([FakeResponse(body={"should": "not run"})])
+            guard = self.make_guard(session, cache_file, now=[1200])
+            result = guard.peek("channels:1")
+        self.assertEqual(result["data"], [{"id": "10"}])
+        self.assertEqual(session.calls, [])
+
     def test_parallel_gets_are_coalesced(self):
         session = FakeSession([FakeResponse(body=[{"id": "1"}])], delay=0.05)
         guard = self.make_guard(session)
@@ -136,6 +149,40 @@ class DiscordGuardTests(unittest.TestCase):
         guard = self.make_guard(session)
         with self.assertRaises(DiscordGuardError):
             guard.request("POST", "/channels/1/messages", {"content": "hello"})
+        self.assertEqual(len(session.calls), 1)
+
+    def test_exhausted_response_bucket_blocks_next_write_before_upstream(self):
+        now = [1000.0]
+        session = FakeSession([FakeResponse(200, {"id": "1"}, headers={
+            "X-RateLimit-Bucket": "message-bucket",
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset-After": "10",
+        })])
+        guard = self.make_guard(session, now=now)
+        guard.request("POST", "/channels/1/messages", {"content": "first"})
+        with self.assertRaises(DiscordGuardError) as raised:
+            guard.request("POST", "/channels/1/messages", {"content": "second"})
+        self.assertEqual(raised.exception.code, "discord_bucket_cooldown")
+        self.assertEqual(len(session.calls), 1)
+
+    def test_unauthorized_response_pauses_follow_up_requests(self):
+        session = FakeSession([FakeResponse(401, {"message": "invalid token"})])
+        guard = self.make_guard(session)
+        with self.assertRaises(DiscordGuardError):
+            guard.request("GET", "/users/@me")
+        with self.assertRaises(DiscordGuardError) as raised:
+            guard.request("GET", "/users/@me/guilds")
+        self.assertEqual(raised.exception.code, "discord_auth_paused")
+        self.assertEqual(len(session.calls), 1)
+
+    def test_forbidden_response_is_negative_cached(self):
+        session = FakeSession([FakeResponse(403, {"message": "missing access"})])
+        guard = self.make_guard(session)
+        with self.assertRaises(DiscordGuardError):
+            guard.request("POST", "/channels/1/messages", {"content": "same"})
+        with self.assertRaises(DiscordGuardError) as raised:
+            guard.request("POST", "/channels/1/messages", {"content": "same"})
+        self.assertEqual(raised.exception.code, "discord_negative_cache")
         self.assertEqual(len(session.calls), 1)
 
 
