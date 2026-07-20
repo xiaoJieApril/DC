@@ -412,6 +412,7 @@ class OnboardingPayload(BaseModel):
 class WelcomeAutomationPayload(BaseModel):
     enabled: bool = False
     channel_id: str = ""
+    roles_channel_id: str = ""
     welcome_content: str = ""
     follow_up_enabled: bool = False
     follow_up_content: str = ""
@@ -1403,6 +1404,8 @@ def save_welcome_automation(guild_id: str, payload: WelcomeAutomationPayload):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         cached_guild_channel(guild_id, welcome["channel_id"])
+        if welcome["roles_channel_id"]:
+            cached_guild_channel(guild_id, welcome["roles_channel_id"])
 
     upsert_welcome_automation(guild_id, welcome)
     cancelled = 0

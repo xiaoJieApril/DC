@@ -959,7 +959,7 @@ async def process_welcome_follow_up(job):
         return
 
     content = render_welcome_template(
-        job.get("content"), member.id, guild.name, job.get("rules_channel_id", "")
+        job.get("content"), member.id, guild.name, job.get("rules_channel_id", ""), job.get("roles_channel_id", "")
     ).strip()
     if not content:
         log_welcome_result("follow_up_failed", job, detail="Follow-up message rendered empty")
@@ -1010,10 +1010,11 @@ async def on_member_join(member: discord.Member):
     channel = member.guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
     onboarding = config.get("onboarding", {}).get(str(member.guild.id), {})
     rules_channel_id = str(onboarding.get("channel_id") or "")
+    roles_channel_id = str(welcome.get("roles_channel_id") or onboarding.get("roles_channel_id") or "")
     fan_role_id = str(onboarding.get("fan_role_id") or onboarding.get("member_role_id") or "")
     fan_role_ids = onboarding_completion_role_ids(onboarding)
     content = render_welcome_template(
-        welcome.get("welcome_content"), member.id, member.guild.name, rules_channel_id
+        welcome.get("welcome_content"), member.id, member.guild.name, rules_channel_id, roles_channel_id
     ).strip()
 
     if channel and content:
@@ -1041,6 +1042,7 @@ async def on_member_join(member: discord.Member):
             joined_at,
             follow_up_delay_seconds(welcome),
             fan_role_ids=fan_role_ids,
+            roles_channel_id=roles_channel_id,
         )
         enqueue_welcome_job(job)
 

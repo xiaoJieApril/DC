@@ -27,12 +27,13 @@ from welcome_automation import (
 class WelcomeAutomationTests(unittest.TestCase):
     def test_template_renders_supported_variables_only(self):
         result = render_welcome_template(
-            "Hello {member}, welcome to {server}. Read {rules_channel}. {unknown}",
+            "Hello {member}, welcome to {server}. Read {rules_channel} then {roles_channel}. {unknown}",
             "42",
             "Gra-VT",
             "99",
+            "100",
         )
-        self.assertEqual(result, "Hello <@42>, welcome to Gra-VT. Read <#99>. {unknown}")
+        self.assertEqual(result, "Hello <@42>, welcome to Gra-VT. Read <#99> then <#100>. {unknown}")
 
     def test_config_normalization_and_delay_units(self):
         config = normalize_welcome_config({
@@ -52,6 +53,7 @@ class WelcomeAutomationTests(unittest.TestCase):
         self.assertEqual(job["job_id"], "1:2:100250")
         self.assertEqual(job["due_at"], 3700.25)
         self.assertEqual(job["rules_channel_id"], "4")
+        self.assertEqual(job["roles_channel_id"], "")
         self.assertEqual(job["fan_role_id"], "5")
 
     def test_validation_requires_content_rules_setup_and_valid_delay(self):
@@ -73,6 +75,12 @@ class WelcomeAutomationTests(unittest.TestCase):
 
         config["delay_value"] = 1
         config["delay_unit"] = "minutes"
+        validate_welcome_config(config, {"channel_id": "4", "fan_role_id": "5"})
+
+        config["welcome_content"] = "Choose roles in {roles_channel}"
+        with self.assertRaisesRegex(ValueError, "role channel"):
+            validate_welcome_config(config, {"channel_id": "4", "fan_role_id": "5"})
+        config["roles_channel_id"] = "6"
         validate_welcome_config(config, {"channel_id": "4", "fan_role_id": "5"})
 
     def test_persistent_queue_claim_retry_finish_and_restart(self):

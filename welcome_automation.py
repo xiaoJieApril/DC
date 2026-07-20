@@ -7,6 +7,7 @@ def default_welcome_config():
     return {
         "enabled": False,
         "channel_id": "",
+        "roles_channel_id": "",
         "welcome_content": "",
         "follow_up_enabled": False,
         "follow_up_content": "",
@@ -21,6 +22,7 @@ def normalize_welcome_config(value):
         return config
     config["enabled"] = bool(value.get("enabled", False))
     config["channel_id"] = str(value.get("channel_id") or "")
+    config["roles_channel_id"] = str(value.get("roles_channel_id") or "")
     config["welcome_content"] = str(value.get("welcome_content") or "")
     config["follow_up_enabled"] = bool(value.get("follow_up_enabled", False))
     config["follow_up_content"] = str(value.get("follow_up_content") or "")
@@ -50,6 +52,11 @@ def validate_welcome_config(config, onboarding):
     uses_rules_channel = "{rules_channel}" in str(config.get("welcome_content") or "") or (
         config.get("follow_up_enabled") and "{rules_channel}" in str(config.get("follow_up_content") or "")
     )
+    uses_roles_channel = "{roles_channel}" in str(config.get("welcome_content") or "") or (
+        config.get("follow_up_enabled") and "{roles_channel}" in str(config.get("follow_up_content") or "")
+    )
+    if uses_roles_channel and not str(config.get("roles_channel_id") or "").isdigit():
+        raise ValueError("Choose a role channel")
     if uses_rules_channel or config.get("follow_up_enabled"):
         if not str(onboarding.get("channel_id") or "").isdigit():
             raise ValueError("Configure the New Member Rules channel first")
@@ -63,11 +70,12 @@ def validate_welcome_config(config, onboarding):
             raise ValueError("Follow-up delay must be between 1 minute and 30 days")
 
 
-def render_welcome_template(content, member_id, server_name, rules_channel_id=""):
+def render_welcome_template(content, member_id, server_name, rules_channel_id="", roles_channel_id=""):
     values = {
         "{member}": f"<@{member_id}>",
         "{server}": str(server_name or ""),
         "{rules_channel}": f"<#{rules_channel_id}>" if rules_channel_id else "",
+        "{roles_channel}": f"<#{roles_channel_id}>" if roles_channel_id else "",
     }
     result = str(content or "")
     for token, value in values.items():
@@ -91,7 +99,7 @@ def onboarding_completion_role_ids(onboarding):
 
 def build_follow_up_job(
     guild_id, user_id, channel_id, content, rules_channel_id, fan_role_id,
-    joined_at, delay_seconds, fan_role_ids=None,
+    joined_at, delay_seconds, fan_role_ids=None, roles_channel_id="",
 ):
     role_ids = [str(role_id) for role_id in (fan_role_ids or []) if str(role_id).isdigit()]
     if str(fan_role_id or "").isdigit() and str(fan_role_id) not in role_ids:
@@ -103,6 +111,7 @@ def build_follow_up_job(
         "channel_id": str(channel_id),
         "content": str(content),
         "rules_channel_id": str(rules_channel_id or ""),
+        "roles_channel_id": str(roles_channel_id or ""),
         "fan_role_id": str(fan_role_id or ""),
         "fan_role_ids": role_ids,
         "due_at": float(joined_at) + int(delay_seconds),

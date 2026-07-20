@@ -758,6 +758,9 @@ function applyWelcomeForm(config) {
   if ([...$("welcomeChannel").options].some((option) => option.value === config.channel_id)) {
     $("welcomeChannel").value = config.channel_id;
   }
+  if ([...$("welcomeRolesChannel").options].some((option) => option.value === config.roles_channel_id)) {
+    $("welcomeRolesChannel").value = config.roles_channel_id;
+  }
   $("welcomeInfo").textContent = "Completed New Member Rules members will not receive the follow-up.";
   renderWelcomePreviews();
 }
@@ -766,6 +769,7 @@ function collectWelcomeForm() {
   return {
     enabled: $("welcomeEnabled").checked,
     channel_id: $("welcomeChannel").value,
+    roles_channel_id: $("welcomeRolesChannel").value,
     welcome_content: $("welcomeContent").value,
     follow_up_enabled: $("followUpEnabled").checked,
     follow_up_content: $("followUpContent").value,
@@ -779,7 +783,8 @@ function welcomePreviewText(value) {
   return String(value || "")
     .replaceAll("{member}", "@New Member")
     .replaceAll("{server}", guild?.name || "Your Server")
-    .replaceAll("{rules_channel}", "#rules-channel");
+    .replaceAll("{rules_channel}", "#rules-channel")
+    .replaceAll("{roles_channel}", "#roles-channel");
 }
 
 function renderWelcomePreviews() {
@@ -808,7 +813,10 @@ async function refreshWelcomeControls() {
   const guildId = $("welcomeGuild").value;
   if (!guildId) return;
   $("welcomeInfo").textContent = "Loading Welcome Automation...";
-  await fillChannelSelect("welcomeChannel", guildId, "Choose welcome channel");
+  await Promise.all([
+    fillChannelSelect("welcomeChannel", guildId, "Choose welcome channel"),
+    fillChannelSelect("welcomeRolesChannel", guildId, "Choose role channel"),
+  ]);
   const config = await api(`/api/welcome-automation/${guildId}`);
   applyWelcomeForm(config);
 }

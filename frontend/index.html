@@ -242,9 +242,10 @@
         <section id="welcome" class="view hidden">
           <div class="panel">
             <h2>Welcome Automation</h2>
-            <div class="grid two">
+            <div class="grid three">
               <label>Server<select id="welcomeGuild"></select></label>
               <label>Welcome Channel<select id="welcomeChannel"></select></label>
+              <label>Role Channel<select id="welcomeRolesChannel"></select></label>
             </div>
             <label class="check"><input id="welcomeEnabled" type="checkbox" /> Enable automatic welcome message</label>
             <label>Welcome Message<textarea id="welcomeContent" rows="6" placeholder="Required. Use the variables below."></textarea></label>
@@ -252,6 +253,7 @@
               <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{member}">{member}</button>
               <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{server}">{server}</button>
               <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{rules_channel}">{rules_channel}</button>
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{roles_channel}">{roles_channel}</button>
             </div>
             <div class="preview-box">
               <div class="preview-label">Welcome Preview</div>
@@ -269,6 +271,7 @@
               <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{member}">{member}</button>
               <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{server}">{server}</button>
               <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{rules_channel}">{rules_channel}</button>
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{roles_channel}">{roles_channel}</button>
             </div>
             <div class="preview-box">
               <div class="preview-label">Follow-up Preview</div>
@@ -397,6 +400,6 @@
 
     <div id="toast" class="toast hidden"></div>
     <script src="./config.js?v=20260714-error-prevention"></script>
-    <script src="./app.js?v=20260714-error-prevention"></script>
+    <script src="./app.js?v=20260720-roles-channel"></script>
   </body>
 </html>

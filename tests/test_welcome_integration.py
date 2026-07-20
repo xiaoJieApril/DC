@@ -53,7 +53,8 @@ class WelcomeBotTests(unittest.IsolatedAsyncioTestCase):
                 "10": {
                     "enabled": True,
                     "channel_id": "30",
-                    "welcome_content": "Welcome {member} to {server}; read {rules_channel}",
+                    "roles_channel_id": "60",
+                    "welcome_content": "Welcome {member} to {server}; read {rules_channel}, then visit {roles_channel}",
                     "follow_up_enabled": True,
                     "follow_up_content": "Reminder {member}",
                     "delay_value": 1,
@@ -69,9 +70,10 @@ class WelcomeBotTests(unittest.IsolatedAsyncioTestCase):
             await bot.on_member_join(member)
 
         channel.send.assert_awaited_once()
-        self.assertEqual(channel.send.await_args.args[0], "Welcome <@20> to Gra-VT; read <#40>")
+        self.assertEqual(channel.send.await_args.args[0], "Welcome <@20> to Gra-VT; read <#40>, then visit <#60>")
         enqueue.assert_called_once()
         self.assertEqual(enqueue.call_args.args[0]["due_at"], 3700.0)
+        self.assertEqual(enqueue.call_args.args[0]["roles_channel_id"], "60")
 
     async def test_bot_member_is_ignored(self):
         member = FakeMember(is_bot=True)
@@ -100,7 +102,8 @@ class WelcomeApiTests(unittest.TestCase):
         payload = dashboard_api.WelcomeAutomationPayload(
             enabled=True,
             channel_id="30",
-            welcome_content="Welcome {member}; read {rules_channel}",
+            roles_channel_id="60",
+            welcome_content="Welcome {member}; read {rules_channel}, then visit {roles_channel}",
             follow_up_enabled=True,
             follow_up_content="Reminder {member}",
             delay_value=1,
