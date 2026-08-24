@@ -911,7 +911,7 @@ function renderModerationCases(rows) {
       : row.evidence_url ? `<div class="saved-meta"><a href="${escapeHtml(row.evidence_url)}" target="_blank" rel="noopener">Open evidence</a></div>` : "";
     const strike = row.strike_summary || {};
     const strikeHtml = Number.isFinite(Number(strike.count))
-      ? `<div class="saved-meta">90d strikes: ${escapeHtml(String(strike.count))} · Next: #${escapeHtml(String(strike.next_count))} · ${escapeHtml(strike.suggested_action || "")}</div>`
+      ? `<div class="saved-meta">90d strikes: ${escapeHtml(String(strike.count))} · Next: #${escapeHtml(String(strike.next_count))}</div><div class="saved-meta">Suggested action: ${escapeHtml(strike.suggested_action || "")}</div>`
       : "";
     const archived = state.moderation.view === "archive";
     item.innerHTML = `
@@ -1076,33 +1076,46 @@ function renderEvidencePreview() {
   box.innerHTML = `<strong>${escapeHtml(evidence.author_display)} (${escapeHtml(evidence.author_id)})</strong><div class="saved-meta">${escapeHtml(evidence.created_at || "")}</div><div>${renderDiscordText(evidence.content || "(message has no text)", $("modGuild").value)}</div>${attachments ? `<div class="saved-meta">Attachments: ${attachments}</div>` : ""}`;
 }
 
-function setModerationHistoryStatus(message, muted = true) {
-  const box = $("modHistoryPreview");
+function setModerationHistoryBox(id, message, muted = true) {
+  const box = $(id);
   if (!box) return;
   box.classList.toggle("muted", muted);
   box.textContent = message;
 }
 
+function setModerationHistoryStatus(strikeMessage, suggestionMessage, muted = true) {
+  setModerationHistoryBox("modStrikePreview", strikeMessage, muted);
+  setModerationHistoryBox("modSuggestionPreview", suggestionMessage, muted);
+}
+
 function renderModerationHistoryPreview(summary) {
   if ($("modSeverity").value === "red_line") {
-    setModerationHistoryStatus("Red line: immediate action. This case does not use the 90-day strike ladder.", false);
+    setModerationHistoryStatus(
+      "Red line case",
+      "Immediate action. This case does not use the 90-day strike ladder.",
+      false,
+    );
     return;
   }
   const count = Number(summary?.count || 0);
   const nextCount = Number(summary?.next_count || count + 1);
   const action = summary?.suggested_action || "";
-  setModerationHistoryStatus(`近 90 天一般違規：${count}；本次若成立：第 ${nextCount} 次，建議 ${action}`, false);
+  setModerationHistoryStatus(
+    `近 90 天一般違規：${count}；本次若成立：第 ${nextCount} 次`,
+    `建議處分：${action}`,
+    false,
+  );
 }
 
 async function loadModerationHistory() {
   const guildId = $("modGuild").value;
   const targetId = $("modTargetId").value.trim();
   if (!guildId || !targetId) {
-    setModerationHistoryStatus("Enter a Target User ID to load 90-day history.");
+    setModerationHistoryStatus("Enter a Target User ID to load 90-day strike history.", "Suggested action will appear here.");
     return;
   }
   if (!/^\d+$/.test(targetId)) {
-    setModerationHistoryStatus("Target User ID must be numeric to load history.");
+    setModerationHistoryStatus("Target User ID must be numeric to load history.", "Suggested action will appear after a valid ID.");
     return;
   }
   if ($("modSeverity").value === "red_line") {
@@ -1111,14 +1124,14 @@ async function loadModerationHistory() {
   }
   if (moderationHistoryController) moderationHistoryController.abort();
   moderationHistoryController = new AbortController();
-  setModerationHistoryStatus("Loading history...");
+  setModerationHistoryStatus("Loading history...", "Loading suggestion...");
   try {
     const summary = await api(`/api/moderation/${guildId}/history/${targetId}`, { signal: moderationHistoryController.signal });
     state.moderation.history = summary;
     renderModerationHistoryPreview(summary);
   } catch (err) {
     if (err.name === "AbortError") return;
-    setModerationHistoryStatus("Could not load history.");
+    setModerationHistoryStatus("Could not load history.", "Could not load suggestion.");
   }
 }
 
@@ -1205,7 +1218,7 @@ async function createModerationCase() {
   state.moderation.evidence = null;
   $("modRuleTemplate").value = "custom";
   renderEvidencePreview();
-  setModerationHistoryStatus("Enter a Target User ID to load 90-day history.");
+  setModerationHistoryStatus("Enter a Target User ID to load 90-day strike history.", "Suggested action will appear here.");
   await loadModeration();
   await loadAuditLogs();
 }
@@ -1994,7 +2007,7 @@ function wireEvents() {
     state.moderation.evidence = null;
     resetRuleForm();
     renderEvidencePreview();
-    setModerationHistoryStatus("Enter a Target User ID to load 90-day history.");
+    setModerationHistoryStatus("Enter a Target User ID to load 90-day strike history.", "Suggested action will appear here.");
     await runAction("Load moderation server", refreshModerationControls);
   });
   $("addRuleBtn").addEventListener("click", addOrUpdateRule);
