@@ -9,17 +9,52 @@ import re
 import subprocess
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
-from storage import append_audit_log, delete_record, init_db, load_config, save_config, storage_name, upsert_message, upsert_onboarding, upsert_reaction_role
+from discord_guard import DiscordGuard, DiscordGuardError
+from request_limits import IdempotencyStore, SharedRateCoordinator, SlidingWindowLimiter, env_int
+
+from storage import (
+    append_audit_log,
+    append_moderation_case,
+    delete_record,
+    init_db,
+    load_config,
+    save_config,
+    set_moderation_settings,
+    set_moderation_rules,
+    set_ticket_settings,
+    storage_name,
+    update_moderation_case,
+    update_ticket,
+    cancel_pending_welcome_jobs,
+    upsert_message,
+    upsert_onboarding,
+    upsert_reaction_role,
+    upsert_welcome_automation,
+)
+from moderation_tools import (
+    evidence_snapshot_from_api,
+    filter_status_view,
+    normalize_moderation_rules,
+    parse_discord_message_url,
+    status_counts,
+    status_update,
+    validate_moderation_rules,
+)
+from welcome_automation import (
+    normalize_welcome_config,
+    validate_welcome_config,
+)
 
 
 load_dotenv()
@@ -35,20 +70,156 @@ COLOR_MAP = {
 }
 DEFAULT_RR_DESCRIPTION = "使用下拉式選單來更改名字顏色"
 DEFAULT_ONBOARDING_LANGUAGES = {
-    "en": {
-        "label": "English",
-        "rules": "Welcome! Please read the server rules and click Agree to unlock the server.",
-        "enabled": True,
-    },
+    "zh": {"label": "中文", "rules": "請閱讀規則並點擊 Agree 取得 fan role。", "enabled": True, "language_role_id": ""},
+    "en": {"label": "English", "rules": "Please read the rules and click Agree to receive the fan role.", "enabled": True, "language_role_id": ""},
+    "ja": {"label": "日本語", "rules": "ルールを読んで Agree を押すと fan role を受け取れます。", "enabled": True, "language_role_id": ""},
+}
+DEFAULT_ONBOARDING_TEXT = {
+    "panel_title": "Choose your rules language",
+    "panel_description": "Select one language to read its rules. Members who already have that fan role will see the rules without an Agree button.",
+    "panel_placeholder": "Select language",
+    "panel_color": "Blurple",
+    "rules_title": "{label} Rules",
+    "rules_color": "Blurple",
+    "rules_footer": "",
+    "agree_label": "Agree",
+}
+SERVER_RULES_ONBOARDING_TEXT = {
+    "panel_title": "📜 Server Guidelines",
+    "panel_description": "Please choose one language to read the server rules privately.",
+    "panel_placeholder": "Choose your language",
+    "panel_color": "Blurple",
+    "rules_title": "{label} Server Guidelines",
+    "rules_color": "Blurple",
+    "rules_footer": "Respect others. Respect creators. Respect privacy.",
+    "agree_label": "✅ Agree and Unlock",
+}
+SERVER_RULES_LANGUAGES = {
     "zh": {
         "label": "中文",
-        "rules": "歡迎加入！請閱讀伺服器規則，然後點擊 Agree 以解鎖伺服器。",
         "enabled": True,
+        "language_role_id": "",
+        "rules": """## 📜 伺服器守則｜Server Guidelines｜サーバールール
+
+### 1️⃣ 尊重彼此｜Mutual Respect｜相互尊重
+本伺服器嚴禁任何形式的人身攻擊、歧視、騷擾、霸凌、惡意抹黑及仇恨言論。若意見產生分歧時，請理性，針對議題進行討論，對事不對人。
+
+### 2️⃣ 維護氛圍｜Maintain a Healthy Atmosphere｜雰囲気の維持
+本伺服器嚴禁引戰、釣魚、帶風向、煽動粉絲對立等行為。成員間私人糾紛請私下協調，或尋求管理團隊介入。請盡量避免討論政治或宗教相關話題，以免引發不必要的爭執。本站支援中、英、日三語交流，請尊重非母語使用者。
+
+### 3️⃣ 全年齡規範｜All-Age Standard｜全年齢対象
+本伺服器為全年齡向空間，嚴禁任何色情、裸露、性暗示、R18／NSFW 內容及相關連結。Discord 服務條款所禁止之內容亦同。
+
+### 4️⃣ 資訊查證｜Verify Information｜情報の検証
+嚴禁散布謠言、未經證實之消息、惡意揣測及誤導性資訊。如涉及 VTuber 畢業、轉生等敏感議題時，請附上可信來源。
+
+### 5️⃣ 尊重智慧財產｜Respect Intellectual Property｜知的財産の尊重
+嚴禁盜用圖片、未經授權轉載他人作品，以及外流會員限定或付費內容等。轉貼時請附上原作者來源，使用前應取得其授權。
+
+### 6️⃣ 隱私絕對保護｜Absolute Privacy Protection｜プライバシーの絶対的保護
+隱私是本伺服器最核心的紅線。嚴禁公開、索取或散布任何成員的真實姓名、地址、電話、學校、工作場所、社群帳號等個人資訊。公共頻道嚴禁以明示、暗示、縮寫、謎語或引導查詢等方式討論 VTuber 中之人或前世身份。如欲討論轉生相關話題，請至 `#roles` 領取「👻 深度旅人」身分組後，於專屬頻道進行。
+
+允許討論 VTuber 的過去經歷與當前活動，但嚴禁在公共頻道中連結、暗示或揭示「過去身份」與「當前身份」為同一人。此類行為視同違反隱私紅線，將逕行處分。
+
+### 7️⃣ 禁止洗版與廣告｜No Spam or Advertising｜スパム・広告の禁止
+嚴禁洗版、惡意刷屏、大量重複訊息、表情符號氾濫、機器人濫用及惡意標記。未經管理團隊許可，不得宣傳其他伺服器、社群、商業內容或招募資訊。
+
+### 8️⃣ 管理與申訴｜Management and Appeals｜運営と異議申し立て
+遇違規行為請在 `#TICKET｜客服` 通報管理團隊處理，請勿於公開頻道對線。初犯者給予一次申訴機會，將賦予「觀察期」身分組並限制部分權限，可於 `#申訴法庭｜appeal-court` 提出申訴。再犯或申訴失敗者，將依情節輕重處以禁言、頻道限制、踢出或封鎖。
+
+紅線行為將逕行處分，不經警告：洩漏個資、惡意騷擾、仇恨言論、詐騙、NSFW 內容、會員限定內容外流、違反 Discord 服務條款，或其他嚴重破壞社群秩序之行為。
+
+### 💖 管理團隊的話
+本伺服器無複雜潛規則。謹記三項基本原則：尊重他人、尊重創作者、尊重隱私。如有任何疑問，請使用 `#TICKET｜客服` 聯繫 🛡️ 管理團隊。
+
+### 📋 關於處分機制
+🟢 初犯＝機會：初犯者會拿到「觀察期」身分組，暫時限制部分權限，同時保有申訴權利。
+🟡 再犯＝後果：可能是禁言、限制頻道、暫時踢出，或永久封鎖。
+🔴 紅線＝即時處分：個資、騷擾、仇恨、詐騙、NSFW、付費內容外流、Discord TOS 違規將直接處分。""",
     },
-    "ms": {
-        "label": "Malay",
-        "rules": "Selamat datang! Sila baca peraturan server dan klik Agree untuk membuka akses.",
+    "en": {
+        "label": "English",
         "enabled": True,
+        "language_role_id": "",
+        "rules": """## 📜 Server Guidelines｜伺服器守則｜サーバールール
+
+### 1️⃣ Mutual Respect｜尊重彼此｜相互尊重
+Personal attacks, discrimination, harassment, bullying, slander, and hate speech are strictly prohibited. When disagreements arise, please remain rational and engage in issue-focused discourse rather than personal attacks.
+
+### 2️⃣ Maintain a Healthy Atmosphere｜維護氛圍｜雰囲気の維持
+Drama-baiting, trolling, and fan war incitement are strictly prohibited. Personal disputes should be resolved privately or escalated to the staff team. Please refrain from political or religious topics to avoid unnecessary conflicts. This server supports Chinese, English, and Japanese; please be respectful to non-native speakers.
+
+### 3️⃣ All-Age Standard｜全年齡規範｜全年齢対象
+This server is an all-ages space. NSFW content, nudity, sexual material, and related links are strictly prohibited. Discord Terms of Service apply.
+
+### 4️⃣ Verify Information｜資訊查證｜情報の検証
+Rumors, unverified claims, malicious speculation, and misinformation are prohibited. For sensitive topics such as VTuber graduations or reincarnation, please provide credible sources.
+
+### 5️⃣ Respect Intellectual Property｜尊重智慧財產｜知的財産の尊重
+Art theft, unauthorized reposting, and leaking of members-only or paid content are strictly forbidden. Proper credit to original creators is required, and permission must be obtained before sharing.
+
+### 6️⃣ Absolute Privacy Protection｜隱私絕對保護｜プライバシーの絶対的保護
+Privacy is the absolute red line of this server. Sharing, requesting, or distributing personal information is prohibited. Public channels strictly forbid any discussion of VTubers' past identities, whether explicit, implied, abbreviated, or alluded. Reincarnation-related discussions must be conducted in designated channels after obtaining the 「👻 Deep Traveler」 role in `#roles`.
+
+Past activities and current activities may be discussed as separate topics, but linking or implying that a past identity and current identity are the same person is prohibited in public channels and will be treated as a privacy violation.
+
+### 7️⃣ No Spam or Advertising｜禁止洗版與廣告｜スパム・広告の禁止
+Spam, flooding, repeated messaging, emoji spam, bot abuse, and mass pings are prohibited. Advertising other servers, communities, commercial content, or recruitment requires prior staff approval.
+
+### 8️⃣ Management and Appeals｜管理與申訴｜運営と異議申し立て
+Please report violations to staff via `#TICKET｜客服`; do not engage publicly. First-time offenders are granted one appeal opportunity, receive a probationary role with restricted permissions, and may appeal in `#申訴法庭｜appeal-court`. Repeated violations or failed appeals may result in mutes, channel restrictions, kicks, or bans.
+
+Immediate action without warning applies to doxxing, harassment, hate speech, scams, NSFW content, paid content leaks, Discord TOS violations, and severe disruption.
+
+### 💖 A Note from the Staff
+No hidden rules. Three core principles: Respect others. Respect creators. Respect privacy. For questions, contact 🛡️ Staff via `#TICKET｜客服`.
+
+### 📋 About Enforcement
+🟢 First Offense = A Chance: first-time offenders receive a probationary role and appeal rights.
+🟡 Repeated Offense = Consequences: actions may escalate to mutes, restrictions, kicks, or bans.
+🔴 Red Line = Immediate Action: doxxing, harassment, hate, scams, NSFW, paid content leaks, and Discord TOS violations receive immediate action.""",
+    },
+    "ja": {
+        "label": "日本語",
+        "enabled": True,
+        "language_role_id": "",
+        "rules": """## 📜 サーバールール｜伺服器守則｜Server Guidelines
+
+### 1️⃣ 相互尊重｜尊重彼此｜Mutual Respect
+人格攻撃・差別・ハラスメント・いじめ・誹謗中傷・ヘイトスピーチを固く禁じます。意見が異なる場合は、冷静に建設的な議論をお願いいたします。
+
+### 2️⃣ 雰囲気の維持｜維護氛圍｜Maintain a Healthy Atmosphere
+対立煽り・釣り・ファン同士の争いを誘発する行為を固く禁じます。個人的な揉め事は個別に解決するか、スタッフへご連絡ください。政治的・宗教的な話題は、不要な争いを避けるためお控えください。当サーバーは中国語・英語・日本語での交流を支援しております。非母語話者への配慮をお願いいたします。
+
+### 3️⃣ 全年齢対象｜全年齡規範｜All-Age Standard
+当サーバーは全年齢対象の空間です。わいせつ・露出・性的暗示・R18／NSFWコンテンツ及び関連リンクを固く禁じます。Discord利用規約も厳守してください。
+
+### 4️⃣ 情報の検証｜資訊查證｜Verify Information
+デマ・未確認情報・悪意のある憶測・誤解を招く発言を禁止します。VTuberの卒業・転生などデリケートな話題については、信頼できる情報源を明示してください。
+
+### 5️⃣ 知的財産の尊重｜尊重智慧財產｜Respect Intellectual Property
+画像の無断使用・無断転載・有料コンテンツの流出を固く禁じます。転載時は必ず出典を明記し、事前に許可を取得してください。
+
+### 6️⃣ プライバシーの絶対的保護｜隱私絕對保護｜Absolute Privacy Protection
+プライバシーは当サーバーにおける絶対的な守備線です。個人情報の共有・要求・拡散を固く禁じます。公開チャンネルにおける「中の人」に関する言及・暗示・略語・謎かけ・誘導を一切禁止します。転生関連の話題は `#roles` にて「👻 深度旅人」ロールを取得の上、専用チャンネルをご利用ください。
+
+過去の活動と現在の活動は別個の話題として扱えますが、公開チャンネルで過去の身份と現在の身份を同一人物として連結・暗示する行為は禁止されます。
+
+### 7️⃣ スパム・広告の禁止｜禁止洗版與廣告｜No Spam or Advertising
+連投・スパム・大量メッセージ・絵文字荒らし・Bot乱用・大量メンションを禁止します。他サーバー・コミュニティ・商業コンテンツ・募集情報の宣伝は、事前にスタッフの許可を得てください。
+
+### 8️⃣ 運営と異議申し立て｜管理與申訴｜Management and Appeals
+違反行為は `#TICKET｜客服` にてスタッフへご報告ください。初回違反者には異議申し立ての機会を保証し、「観察期間」ロールを付与の上、`#申訴法庭｜appeal-court` にて説明の機会を設けます。再違反または申し立て却下の場合は、ミュート・チャンネル制限・キック・BAN等の措置を取ります。
+
+即時処分対象：個人情報流出・嫌がらせ・ヘイト・詐欺・NSFW・有料コンテンツ流出・Discord利用規約違反・その他重大な秩序破壊。
+
+### 💖 スタッフより
+複雑な暗黙ルールはございません。他者への尊重・クリエイターへの尊重・プライバシーの尊重をお守りください。ご不明な点は `#TICKET｜客服` にて 🛡️ スタッフまでお問い合わせください。
+
+### 📋 処分について
+🟢 初回違反＝チャンス：観察期間ロールと異議申し立ての権利があります。
+🟡 再違反＝結果：ミュート、制限、キック、BAN へ進む場合があります。
+🔴 レッドライン＝即時処分：個人情報、嫌がらせ、ヘイト、詐欺、NSFW、有料コンテンツ流出、Discord規約違反は警告なしで処分されます。""",
     },
 }
 BASE_DIR = Path(__file__).resolve().parent
@@ -58,6 +229,9 @@ BOT_PID_PATH = LOG_DIR / "bot.pid"
 BOT_LOCK = threading.Lock()
 BOT_PROCESS = None
 BOT_STARTED_AT = 0.0
+RATE_COORDINATOR = SharedRateCoordinator(BASE_DIR / "data" / "request_limits.sqlite3")
+DASHBOARD_LIMITER = SlidingWindowLimiter()
+IDEMPOTENCY_STORE = IdempotencyStore(ttl_seconds=env_int("DASHBOARD_IDEMPOTENCY_TTL_SECONDS", 300))
 
 
 def env(name, default=""):
@@ -92,12 +266,98 @@ app.add_middleware(
 )
 
 
+def request_identity(request):
+    raw = request.headers.get("authorization") or request.cookies.get("session")
+    if not raw:
+        raw = request.client.host if request.client else "unknown"
+    return hashlib.sha256(str(raw).encode("utf-8")).hexdigest()[:24]
+
+
+def api_rate_scope(request):
+    path = request.url.path
+    method = request.method.upper()
+    if path == "/api/login":
+        return "login", env_int("DASHBOARD_LOGIN_LIMIT_PER_MINUTE", 5)
+    discord_write = method != "GET" and (
+        path.startswith("/api/messages")
+        or path.startswith("/api/reaction-roles")
+        or path.endswith("/publish")
+        or path == "/api/moderation/cases"
+        or (path.startswith("/api/saved/") and method == "DELETE")
+    )
+    if discord_write:
+        return "discord_write", env_int("DASHBOARD_DISCORD_WRITE_LIMIT_PER_MINUTE", 10)
+    if path.startswith("/api/discord/"):
+        return "discord_read", env_int("DASHBOARD_DISCORD_READ_LIMIT_PER_MINUTE", 30)
+    if method == "GET":
+        return "local_read", env_int("DASHBOARD_LOCAL_READ_LIMIT_PER_MINUTE", 120)
+    return "local_write", env_int("DASHBOARD_LOCAL_WRITE_LIMIT_PER_MINUTE", 30)
+
+
+def rate_limit_response(scope, retry_after, code="dashboard_rate_limited"):
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(retry_after)},
+        content={"detail": {
+            "message": "Dashboard requests are temporarily limited. Please wait before trying again.",
+            "code": code,
+            "retry_after_seconds": retry_after,
+            "scope": scope,
+        }},
+    )
+
+
+@app.middleware("http")
+async def dashboard_request_protection(request: Request, call_next):
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    identity = request_identity(request)
+    scope, limit = api_rate_scope(request)
+    allowed, retry_after = DASHBOARD_LIMITER.check(scope, identity, limit)
+    if not allowed:
+        RATE_COORDINATOR.increment("dashboard_rejected")
+        return rate_limit_response(scope, retry_after)
+
+    idempotency_key = request.headers.get("x-idempotency-key", "").strip()[:128]
+    use_idempotency = request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and bool(idempotency_key)
+    if not use_idempotency:
+        return await call_next(request)
+
+    state, entry = IDEMPOTENCY_STORE.begin(identity, idempotency_key)
+    if state == "inflight":
+        RATE_COORDINATOR.increment("dashboard_duplicate_blocked")
+        return rate_limit_response("idempotency", 1, "duplicate_request_inflight")
+    if state == "replay":
+        RATE_COORDINATOR.increment("dashboard_duplicate_replayed")
+        headers = {key: value for key, value in entry.get("headers", {}).items() if key.lower() not in {"transfer-encoding"}}
+        headers["X-Idempotent-Replay"] = "true"
+        return Response(content=entry.get("body", b""), status_code=entry.get("status_code", 200), headers=headers)
+
+    try:
+        response = await call_next(request)
+        if hasattr(response, "body_iterator"):
+            body = b"".join([chunk async for chunk in response.body_iterator])
+        else:
+            body = bytes(getattr(response, "body", b""))
+        headers = dict(response.headers)
+        rebuilt = Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
+        if response.status_code < 500:
+            IDEMPOTENCY_STORE.complete(identity, idempotency_key, response.status_code, body, headers)
+        else:
+            IDEMPOTENCY_STORE.discard(identity, idempotency_key)
+        return rebuilt
+    except Exception:
+        IDEMPOTENCY_STORE.discard(identity, idempotency_key)
+        raise
+
+
 class LoginPayload(BaseModel):
     username: str
     password: str
 
 
 class MessagePayload(BaseModel):
+    guild_id: str = ""
     channel_id: str
     content: str
     use_embed: bool = True
@@ -113,6 +373,7 @@ class MappingPayload(BaseModel):
 
 
 class ReactionRolePayload(BaseModel):
+    guild_id: str = ""
     channel_id: str
     panel_name: str = ""
     title: str = ""
@@ -128,14 +389,35 @@ class OnboardingLanguagePayload(BaseModel):
     label: str = ""
     rules: str = ""
     enabled: bool = True
+    language_role_id: str = ""
 
 
 class OnboardingPayload(BaseModel):
     enabled: bool = False
+    fan_role_id: str = ""
     channel_id: str = ""
     member_role_id: str = ""
     panel_message_id: str = ""
+    panel_title: str = DEFAULT_ONBOARDING_TEXT["panel_title"]
+    panel_description: str = DEFAULT_ONBOARDING_TEXT["panel_description"]
+    panel_placeholder: str = DEFAULT_ONBOARDING_TEXT["panel_placeholder"]
+    panel_color: str = DEFAULT_ONBOARDING_TEXT["panel_color"]
+    rules_title: str = DEFAULT_ONBOARDING_TEXT["rules_title"]
+    rules_color: str = DEFAULT_ONBOARDING_TEXT["rules_color"]
+    rules_footer: str = ""
+    agree_label: str = DEFAULT_ONBOARDING_TEXT["agree_label"]
     languages: dict[str, OnboardingLanguagePayload] = Field(default_factory=dict)
+
+
+class WelcomeAutomationPayload(BaseModel):
+    enabled: bool = False
+    channel_id: str = ""
+    roles_channel_id: str = ""
+    welcome_content: str = ""
+    follow_up_enabled: bool = False
+    follow_up_content: str = ""
+    delay_value: int = 1
+    delay_unit: str = "hours"
 
 
 class SavedUpdatePayload(BaseModel):
@@ -143,6 +425,72 @@ class SavedUpdatePayload(BaseModel):
     guild_id: str
     message_id: str
     payload: dict
+
+
+class ModerationSettingsPayload(BaseModel):
+    probation_role_id: str = ""
+    log_channel_id: str = ""
+
+
+class ModerationRulePayload(BaseModel):
+    rule_id: str = ""
+    number: str = ""
+    name: str = ""
+    reason: str = ""
+    severity: str = "normal"
+    action: str = "warning"
+    timeout_minutes: int = 0
+    remove_role_id: str = ""
+    enabled: bool = True
+
+
+class ModerationRulesPayload(BaseModel):
+    rules: list[ModerationRulePayload] = Field(default_factory=list)
+
+
+class EvidenceResolvePayload(BaseModel):
+    message_url: str
+
+
+class ModerationCasePayload(BaseModel):
+    guild_id: str
+    target_user_id: str
+    target_display: str = ""
+    rule_id: str = ""
+    rule_name: str = ""
+    rule_number: str = ""
+    violation_type: str = ""
+    severity: str = "normal"
+    action: str = "warning"
+    reason: str
+    evidence_url: str = ""
+    evidence_snapshot: dict = Field(default_factory=dict)
+    notes: str = ""
+    status: str = "open"
+    probation_role_id: str = ""
+    remove_role_id: str = ""
+    timeout_minutes: int = 0
+    log_channel_id: str = ""
+
+
+class ModerationResolvePayload(BaseModel):
+    status: str = "resolved"
+    notes: str = ""
+
+
+class TicketSettingsPayload(BaseModel):
+    ticket_channel_id: str = ""
+    log_channel_id: str = ""
+    panel_message_id: str = ""
+    panel_title: str = "Need help?"
+    panel_description: str = "Open a private ticket for staff review. Your message will be visible to staff only."
+    button_label: str = "Open Ticket"
+    panel_color: str = "Blurple"
+
+
+class TicketStatusPayload(BaseModel):
+    status: str = "resolved"
+    notes: str = ""
 
 
 def bot_returncode():
@@ -342,27 +690,92 @@ def token():
     return value
 
 
-def discord_request(method, path, payload=None):
-    headers = {
-        "Authorization": f"Bot {token()}",
-        "Content-Type": "application/json",
-    }
-    response = requests.request(
-        method,
-        f"{DISCORD_API}{path}",
-        headers=headers,
-        json=payload,
-        timeout=15,
+def shared_discord_request_permit():
+    allowed, retry_after = RATE_COORDINATOR.check_window(
+        "discord_api_global_budget",
+        env_int("DISCORD_SHARED_REQUESTS_PER_SECOND", 25),
+        1,
     )
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("message", response.text)
-        except ValueError:
-            detail = response.text
-        raise HTTPException(status_code=response.status_code, detail=detail)
-    if response.text:
-        return response.json()
-    return None
+    if not allowed:
+        RATE_COORDINATOR.increment("shared_discord_budget_rejected")
+    return allowed, retry_after
+
+
+discord_guard = DiscordGuard(
+    DISCORD_API,
+    token,
+    cache_file=Path(__file__).resolve().parent / "data" / "discord_cache.json",
+    request_permit=shared_discord_request_permit,
+)
+
+
+def discord_request(method, path, payload=None):
+    try:
+        result = discord_guard.request(method, path, payload)
+        # Only metadata mutations invalidate selector caches. Message/reaction/member
+        # writes do not change cached guild, channel, role, or emoji definitions.
+        if method.upper() != "GET" and re.fullmatch(r"/channels/\d+", path):
+            discord_guard.invalidate("channel:")
+            discord_guard.invalidate("channels:")
+        elif method.upper() != "GET" and re.fullmatch(r"/guilds/\d+", path):
+            discord_guard.invalidate("guilds")
+        return result
+    except DiscordGuardError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "message": exc.message,
+                "code": exc.code,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        ) from exc
+
+
+def discord_cached_get(path, cache_key, persist=True, ttl=None):
+    try:
+        return discord_guard.get(path, cache_key=cache_key, persist=persist, ttl=ttl)
+    except DiscordGuardError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "message": exc.message,
+                "code": exc.code,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        ) from exc
+
+
+def cached_emojis(guild_id):
+    return discord_cached_get(f"/guilds/{guild_id}/emojis", f"emojis:{guild_id}")["data"]
+
+
+def cached_channel(channel_id):
+    return discord_cached_get(f"/channels/{channel_id}", f"channel:{channel_id}")["data"]
+
+
+def cached_guild_channel(guild_id, channel_id):
+    """Validate a selected channel from the persisted guild selector cache first."""
+    guild_id = str(guild_id)
+    channel_id = str(channel_id)
+    cached = discord_guard.peek(f"channels:{guild_id}", allow_stale=True)
+    if cached:
+        channel = next(
+            (
+                item for item in cached.get("data", [])
+                if str(item.get("id")) == channel_id and item.get("type") in (0, 5)
+            ),
+            None,
+        )
+        if not channel:
+            raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+        return channel
+
+    # Backwards-compatible fallback for a first save made before the guild's
+    # channel selector has ever been loaded and persisted.
+    channel = cached_channel(channel_id)
+    if str(channel.get("guild_id")) != guild_id:
+        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+    return channel
 
 
 def first_non_empty_line(value):
@@ -430,7 +843,7 @@ def resolve_emoji_value(guild_id, value):
     shortcode = flag_shortcode_to_unicode(target)
     if shortcode:
         return shortcode
-    for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
+    for emoji in cached_emojis(guild_id):
         if emoji.get("name", "").lower() == target:
             return custom_emoji_value(emoji)
     return raw
@@ -447,7 +860,7 @@ def resolve_emoji_detail(guild_id, value):
         shortcode = flag_shortcode_to_unicode(target)
         if shortcode:
             return {"input": raw, "resolved": shortcode, "found": True, "kind": "unicode_shortcode", "name": target}
-        for emoji in discord_request("GET", f"/guilds/{guild_id}/emojis"):
+        for emoji in cached_emojis(guild_id):
             if emoji.get("name", "").lower() == target:
                 resolved = custom_emoji_value(emoji)
                 return {
@@ -545,9 +958,11 @@ def model_to_dict(value):
 def default_onboarding_config():
     return {
         "enabled": False,
+        "fan_role_id": "",
         "channel_id": "",
         "member_role_id": "",
         "panel_message_id": "",
+        **DEFAULT_ONBOARDING_TEXT,
         "languages": {code: dict(value) for code, value in DEFAULT_ONBOARDING_LANGUAGES.items()},
     }
 
@@ -556,17 +971,25 @@ def normalize_onboarding_config(value):
     config = default_onboarding_config()
     if not isinstance(value, dict):
         return config
+    # Normalize both the current language-role gate and older panel fields.
     config["enabled"] = bool(value.get("enabled", config["enabled"]))
+    config["fan_role_id"] = str(value.get("fan_role_id") or value.get("member_role_id") or "")
     config["channel_id"] = str(value.get("channel_id", config["channel_id"]) or "")
-    config["member_role_id"] = str(value.get("member_role_id", config["member_role_id"]) or "")
+    config["member_role_id"] = str(value.get("member_role_id") or value.get("fan_role_id") or "")
     config["panel_message_id"] = str(value.get("panel_message_id", config["panel_message_id"]) or "")
+    for key, fallback in DEFAULT_ONBOARDING_TEXT.items():
+        config[key] = str(value.get(key, fallback) or fallback)
+    if config["panel_color"] not in COLOR_MAP:
+        config["panel_color"] = DEFAULT_ONBOARDING_TEXT["panel_color"]
+    if config["rules_color"] not in COLOR_MAP:
+        config["rules_color"] = DEFAULT_ONBOARDING_TEXT["rules_color"]
     languages = value.get("languages", {})
     if isinstance(languages, dict):
         for code, item in languages.items():
             clean_code = str(code).strip().lower()
             if not clean_code:
                 continue
-            base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False})
+            base = config["languages"].get(clean_code, {"label": clean_code, "rules": "", "enabled": False, "language_role_id": ""})
             if isinstance(item, BaseModel):
                 item = model_to_dict(item)
             if isinstance(item, dict):
@@ -574,6 +997,7 @@ def normalize_onboarding_config(value):
                     "label": str(item.get("label", base.get("label", clean_code)) or ""),
                     "rules": str(item.get("rules", base.get("rules", "")) or ""),
                     "enabled": bool(item.get("enabled", base.get("enabled", False))),
+                    "language_role_id": str(item.get("language_role_id", base.get("language_role_id", "")) or ""),
                 }
     return config
 
@@ -589,6 +1013,7 @@ def enabled_onboarding_languages(config):
 
 
 def onboarding_panel_payload(guild_id, config):
+    # Publish one public selector; Discord sends the rules privately after interaction.
     languages = enabled_onboarding_languages(config)
     if not languages:
         raise HTTPException(status_code=400, detail="Enable at least one language with rules text")
@@ -596,7 +1021,7 @@ def onboarding_panel_payload(guild_id, config):
         {
             "label": label[:100],
             "value": code[:100],
-            "description": "Read the rules in this language"[:100],
+            "description": f"Read the {label} rules"[:100],
         }
         for code, label, _ in languages
     ]
@@ -604,9 +1029,9 @@ def onboarding_panel_payload(guild_id, config):
         "content": None,
         "embeds": [
             {
-                "title": "Choose your rules language",
-                "description": "Select a language below. The rules will be shown privately, then Agree to unlock the server.",
-                "color": COLOR_MAP["Blurple"],
+                "title": str(config.get("panel_title") or DEFAULT_ONBOARDING_TEXT["panel_title"])[:256],
+                "description": str(config.get("panel_description") or DEFAULT_ONBOARDING_TEXT["panel_description"])[:4096],
+                "color": COLOR_MAP.get(config.get("panel_color"), COLOR_MAP["Blurple"]),
             }
         ],
         "components": [
@@ -616,7 +1041,7 @@ def onboarding_panel_payload(guild_id, config):
                     {
                         "type": 3,
                         "custom_id": f"onboarding_language:{guild_id}",
-                        "placeholder": "Select language",
+                        "placeholder": str(config.get("panel_placeholder") or DEFAULT_ONBOARDING_TEXT["panel_placeholder"])[:150],
                         "min_values": 1,
                         "max_values": 1,
                         "options": options,
@@ -628,9 +1053,149 @@ def onboarding_panel_payload(guild_id, config):
     }
 
 
+def server_rules_onboarding_defaults():
+    payload = dict(SERVER_RULES_ONBOARDING_TEXT)
+    payload["languages"] = {code: dict(item) for code, item in SERVER_RULES_LANGUAGES.items()}
+    return payload
+
+
+def next_case_id(config, guild_id):
+    cases = config.get("moderation_cases", {}).get(str(guild_id), [])
+    max_seen = 0
+    for item in cases:
+        raw = str(item.get("case_id", "")).removeprefix("CASE-")
+        if raw.isdigit():
+            max_seen = max(max_seen, int(raw))
+    return f"CASE-{max_seen + 1:04d}"
+
+
+def normalize_moderation_settings(value):
+    if not isinstance(value, dict):
+        return {"probation_role_id": "", "log_channel_id": ""}
+    return {
+        "probation_role_id": str(value.get("probation_role_id") or ""),
+        "log_channel_id": str(value.get("log_channel_id") or ""),
+    }
+
+
+def moderation_case_embed(case):
+    lines = [
+        f"Target: <@{case.get('target_user_id')}>",
+        f"Action: {case.get('action')}",
+        f"Rule: {case.get('rule_number') or 'unspecified'}",
+        f"Severity: {case.get('severity')}",
+        f"Status: {case.get('status')}",
+        "",
+        str(case.get("reason") or ""),
+    ]
+    if case.get("evidence_url"):
+        lines.append(f"Evidence: {case['evidence_url']}")
+    evidence_content = str((case.get("evidence_snapshot") or {}).get("content") or "").strip()
+    if evidence_content:
+        lines.extend(["", "Evidence snapshot:", evidence_content[:1000]])
+    evidence_attachments = (case.get("evidence_snapshot") or {}).get("attachments") or []
+    if evidence_attachments:
+        lines.append("Attachments: " + " · ".join(str(item.get("url") or "") for item in evidence_attachments[:5]))
+    if case.get("notes"):
+        lines.append(f"Notes: {case['notes']}")
+    return {
+        "title": f"Moderation {case.get('case_id')}",
+        "description": "\n".join(lines)[:4096],
+        "color": COLOR_MAP["Yellow"] if case.get("severity") != "red_line" else COLOR_MAP["Red"],
+        "footer": {"text": f"Actor: {case.get('actor') or 'dashboard'}"},
+    }
+
+
+def send_moderation_log(case, channel_id):
+    if not str(channel_id or "").isdigit():
+        return
+    discord_request(
+        "POST",
+        f"/channels/{channel_id}/messages",
+        {"embeds": [moderation_case_embed(case)], "allowed_mentions": {"parse": []}},
+    )
+
+
+def normalize_ticket_settings(value):
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "ticket_channel_id": str(value.get("ticket_channel_id") or ""),
+        "log_channel_id": str(value.get("log_channel_id") or ""),
+        "panel_message_id": str(value.get("panel_message_id") or ""),
+        "panel_title": str(value.get("panel_title") or "Need help?")[:256],
+        "panel_description": str(
+            value.get("panel_description")
+            or "Open a private ticket for staff review. Your message will be visible to staff only."
+        )[:4096],
+        "button_label": str(value.get("button_label") or "Open Ticket")[:80],
+        "panel_color": str(value.get("panel_color") or "Blurple"),
+    }
+
+
+def ticket_panel_payload(guild_id, settings):
+    # Public entry point; the ticket content is collected later in a private Discord modal.
+    return {
+        "content": None,
+        "embeds": [
+            {
+                "title": settings["panel_title"],
+                "description": settings["panel_description"],
+                "color": COLOR_MAP.get(settings.get("panel_color"), COLOR_MAP["Blurple"]),
+            }
+        ],
+        "components": [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 2,
+                        "style": 1,
+                        "label": settings["button_label"],
+                        "custom_id": f"ticket_open:{guild_id}",
+                    }
+                ],
+            }
+        ],
+        "allowed_mentions": {"parse": []},
+    }
+
+
+def apply_moderation_action(payload, settings):
+    action = str(payload.action or "warning")
+    guild_id = str(payload.guild_id)
+    user_id = str(payload.target_user_id)
+    if action == "probation":
+        role_id = str(payload.probation_role_id or settings.get("probation_role_id") or "")
+        if not role_id.isdigit():
+            raise HTTPException(status_code=400, detail="Choose a probation role")
+        discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
+    elif action == "timeout":
+        minutes = int(payload.timeout_minutes or 0)
+        if minutes <= 0:
+            raise HTTPException(status_code=400, detail="Timeout minutes must be greater than 0")
+        until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        discord_request("PATCH", f"/guilds/{guild_id}/members/{user_id}", {"communication_disabled_until": until})
+    elif action == "remove_role":
+        role_id = str(payload.remove_role_id or "")
+        if not role_id.isdigit():
+            raise HTTPException(status_code=400, detail="Choose a role to remove")
+        discord_request("DELETE", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
+    return action
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "storage": storage_name(), "bot": bot_status_payload()}
+    return {
+        "ok": True,
+        "storage": storage_name(),
+        "bot": bot_status_payload(),
+        "discord": discord_guard.status(),
+        "rate_limits": {
+            "dashboard_rejected": DASHBOARD_LIMITER.rejected,
+            **RATE_COORDINATOR.status(),
+        },
+    }
 
 
 @app.get("/api/bot/status", dependencies=[Depends(require_admin)])
@@ -672,26 +1237,34 @@ def me(request: Request):
 
 @app.get("/api/discord/guilds", dependencies=[Depends(require_admin)])
 def guilds():
-    return discord_request("GET", "/users/@me/guilds")
+    return discord_cached_get("/users/@me/guilds", "guilds")
 
 
 @app.get("/api/discord/guilds/{guild_id}/channels", dependencies=[Depends(require_admin)])
 def channels(guild_id: str):
-    data = discord_request("GET", f"/guilds/{guild_id}/channels")
-    return [item for item in data if item.get("type") in (0, 5)]
+    result = discord_cached_get(f"/guilds/{guild_id}/channels", f"channels:{guild_id}")
+    result["data"] = [item for item in result["data"] if item.get("type") in (0, 5)]
+    return result
 
 
 @app.get("/api/discord/guilds/{guild_id}/roles", dependencies=[Depends(require_admin)])
 def roles(guild_id: str):
-    data = discord_request("GET", f"/guilds/{guild_id}/roles")
-    return [item for item in data if item.get("name") != "@everyone" and not item.get("managed")]
+    result = discord_cached_get(f"/guilds/{guild_id}/roles", f"roles:{guild_id}")
+    result["data"] = [item for item in result["data"] if item.get("name") != "@everyone" and not item.get("managed")]
+    return result
 
 
 @app.get("/api/discord/guilds/{guild_id}/members/search", dependencies=[Depends(require_admin)])
-def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=25)):
+def search_members(guild_id: str, q: str = Query(..., min_length=2), limit: int = Query(10, ge=1, le=25)):
     # Search guild members for the dashboard mention picker.
     query = urllib.parse.urlencode({"query": q.strip(), "limit": limit})
-    data = discord_request("GET", f"/guilds/{guild_id}/members/search?{query}")
+    result = discord_cached_get(
+        f"/guilds/{guild_id}/members/search?{query}",
+        f"members:{guild_id}:{query}",
+        persist=False,
+        ttl=60,
+    )
+    data = result["data"]
     rows = []
     for item in data:
         user = item.get("user") or {}
@@ -708,12 +1281,13 @@ def search_members(guild_id: str, q: str = Query(..., min_length=1), limit: int 
                 "avatar": user.get("avatar"),
             }
         )
-    return rows
+    result["data"] = rows
+    return result
 
 
 @app.get("/api/discord/guilds/{guild_id}/emojis", dependencies=[Depends(require_admin)])
 def emojis(guild_id: str):
-    return discord_request("GET", f"/guilds/{guild_id}/emojis")
+    return discord_cached_get(f"/guilds/{guild_id}/emojis", f"emojis:{guild_id}")
 
 
 @app.get("/api/discord/guilds/{guild_id}/emojis/resolve", dependencies=[Depends(require_admin)])
@@ -733,6 +1307,7 @@ def audit_logs(limit: int = Query(50, ge=1, le=100)):
 
 @app.get("/api/onboarding/{guild_id}", dependencies=[Depends(require_admin)])
 def get_onboarding(guild_id: str):
+    # Load the fan-role gate settings for the selected Discord server.
     config = load_config()
     return normalize_onboarding_config(config.get("onboarding", {}).get(str(guild_id), {}))
 
@@ -743,6 +1318,7 @@ def save_onboarding(guild_id: str, payload: OnboardingPayload):
     data = model_to_dict(payload)
     if not data.get("panel_message_id"):
         data["panel_message_id"] = existing.get("panel_message_id", "")
+    # Save the dashboard-facing gate without dropping older panel metadata.
     config = normalize_onboarding_config(data)
     upsert_onboarding(guild_id, config)
     append_audit_log(
@@ -756,6 +1332,18 @@ def save_onboarding(guild_id: str, payload: OnboardingPayload):
     return config
 
 
+@app.post("/api/onboarding/{guild_id}/server-rules-defaults", dependencies=[Depends(require_admin)])
+def apply_server_rules_defaults(guild_id: str):
+    existing = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+    defaults = server_rules_onboarding_defaults()
+    existing.update({key: value for key, value in defaults.items() if key != "languages"})
+    existing["languages"] = defaults["languages"]
+    config = normalize_onboarding_config(existing)
+    upsert_onboarding(guild_id, config)
+    append_audit_log("loaded_defaults", "onboarding", guild_id, config.get("panel_message_id", ""), {}, request_actor())
+    return config
+
+
 @app.post("/api/onboarding/{guild_id}/publish", dependencies=[Depends(require_admin)])
 def publish_onboarding(guild_id: str):
     config = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
@@ -763,19 +1351,21 @@ def publish_onboarding(guild_id: str):
         raise HTTPException(status_code=400, detail="Enable onboarding before publishing")
     channel_id = str(config.get("channel_id") or "")
     if not channel_id.isdigit():
-        raise HTTPException(status_code=400, detail="Choose an onboarding channel")
-    if not str(config.get("member_role_id") or "").isdigit():
-        raise HTTPException(status_code=400, detail="Choose the member role to assign")
-    channel = discord_request("GET", f"/channels/{channel_id}")
-    if str(channel.get("guild_id")) != str(guild_id):
-        raise HTTPException(status_code=400, detail="Selected channel does not belong to this server")
+        raise HTTPException(status_code=400, detail="Choose a rules channel")
+    missing_language_roles = [
+        label
+        for code, label, _ in enabled_onboarding_languages(config)
+        if not str((config.get("languages", {}).get(code) or {}).get("language_role_id") or "").isdigit()
+    ]
+    if missing_language_roles:
+        raise HTTPException(status_code=400, detail=f"Choose a role for: {', '.join(missing_language_roles)}")
+    cached_guild_channel(guild_id, channel_id)
 
     payload = onboarding_panel_payload(guild_id, config)
     panel_message_id = str(config.get("panel_message_id") or "")
-    message = None
     if panel_message_id:
         try:
-            message = discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
+            discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
         except HTTPException as exc:
             if exc.status_code != 404:
                 raise
@@ -797,6 +1387,265 @@ def publish_onboarding(guild_id: str):
     return {"ok": True, "message_id": panel_message_id, "guild_id": guild_id, "record": config}
 
 
+@app.get("/api/welcome-automation/{guild_id}", dependencies=[Depends(require_admin)])
+def get_welcome_automation(guild_id: str):
+    config = load_config()
+    return normalize_welcome_config(config.get("welcome_automation", {}).get(str(guild_id), {}))
+
+
+@app.put("/api/welcome-automation/{guild_id}", dependencies=[Depends(require_admin)])
+def save_welcome_automation(guild_id: str, payload: WelcomeAutomationPayload):
+    welcome = normalize_welcome_config(model_to_dict(payload))
+    onboarding = normalize_onboarding_config(load_config().get("onboarding", {}).get(str(guild_id), {}))
+
+    if welcome["enabled"]:
+        try:
+            validate_welcome_config(welcome, onboarding)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cached_guild_channel(guild_id, welcome["channel_id"])
+        if welcome["roles_channel_id"]:
+            cached_guild_channel(guild_id, welcome["roles_channel_id"])
+
+    upsert_welcome_automation(guild_id, welcome)
+    cancelled = 0
+    if not welcome["enabled"]:
+        cancelled = cancel_pending_welcome_jobs(guild_id)
+    append_audit_log(
+        "saved",
+        "welcome_automation",
+        guild_id,
+        "",
+        {
+            "channel_id": welcome["channel_id"],
+            "enabled": welcome["enabled"],
+            "follow_up_enabled": welcome["follow_up_enabled"],
+            "cancelled_jobs": cancelled,
+        },
+        request_actor(),
+    )
+    return {**welcome, "cancelled_jobs": cancelled}
+
+
+@app.get("/api/moderation/{guild_id}", dependencies=[Depends(require_admin)])
+def get_moderation(
+    guild_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    view: str = Query("active", pattern="^(active|archive|all)$"),
+):
+    config = load_config()
+    all_cases = config.get("moderation_cases", {}).get(str(guild_id), [])
+    return {
+        "settings": normalize_moderation_settings(config.get("moderation_settings", {}).get(str(guild_id), {})),
+        "rules": normalize_moderation_rules(config.get("moderation_rules", {}).get(str(guild_id), [])),
+        "cases": filter_status_view(all_cases, view, "case")[:limit],
+        "counts": status_counts(all_cases, "case"),
+        "view": view,
+    }
+
+
+@app.put("/api/moderation/{guild_id}/settings", dependencies=[Depends(require_admin)])
+def save_moderation_settings(guild_id: str, payload: ModerationSettingsPayload):
+    settings = normalize_moderation_settings(model_to_dict(payload))
+    set_moderation_settings(guild_id, settings)
+    append_audit_log("saved_settings", "moderation", guild_id, "", settings, request_actor())
+    return settings
+
+
+@app.get("/api/moderation/{guild_id}/rules", dependencies=[Depends(require_admin)])
+def get_moderation_rules(guild_id: str):
+    config = load_config()
+    return {"rules": normalize_moderation_rules(config.get("moderation_rules", {}).get(str(guild_id), []))}
+
+
+@app.put("/api/moderation/{guild_id}/rules", dependencies=[Depends(require_admin)])
+def save_moderation_rules(guild_id: str, payload: ModerationRulesPayload):
+    rules = normalize_moderation_rules([model_to_dict(item) for item in payload.rules])
+    try:
+        validate_moderation_rules(rules)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    set_moderation_rules(guild_id, rules)
+    append_audit_log("saved_rules", "moderation", guild_id, "", {"count": len(rules)}, request_actor())
+    return {"rules": rules}
+
+
+@app.post("/api/moderation/{guild_id}/evidence/resolve", dependencies=[Depends(require_admin)])
+def resolve_moderation_evidence(guild_id: str, payload: EvidenceResolvePayload):
+    try:
+        ids = parse_discord_message_url(payload.message_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if ids["guild_id"] != str(guild_id):
+        raise HTTPException(status_code=400, detail="The message belongs to another server")
+    result = discord_cached_get(
+        f"/channels/{ids['channel_id']}/messages/{ids['message_id']}",
+        f"message:{ids['guild_id']}:{ids['channel_id']}:{ids['message_id']}",
+        persist=False,
+        ttl=30,
+    )
+    snapshot = evidence_snapshot_from_api(result["data"], ids["guild_id"], ids["channel_id"])
+    if not snapshot["author_id"]:
+        raise HTTPException(status_code=400, detail="The Discord message has no author")
+    return {"evidence": snapshot, "stale": bool(result.get("stale")), "cached_at": result.get("cached_at")}
+
+
+@app.post("/api/moderation/cases", dependencies=[Depends(require_admin)])
+def create_moderation_case(payload: ModerationCasePayload):
+    if not str(payload.guild_id).isdigit():
+        raise HTTPException(status_code=400, detail="Choose a server")
+    if not str(payload.target_user_id).isdigit():
+        raise HTTPException(status_code=400, detail="Target user ID must be numeric")
+    if not payload.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required")
+    config = load_config()
+    rules = normalize_moderation_rules(config.get("moderation_rules", {}).get(str(payload.guild_id), []))
+    selected_rule = next((item for item in rules if item["rule_id"] == payload.rule_id), None) if payload.rule_id else None
+    if payload.rule_id and not selected_rule:
+        raise HTTPException(status_code=400, detail="The selected moderation rule no longer exists")
+    evidence = dict(payload.evidence_snapshot or {})
+    if evidence:
+        if str(evidence.get("guild_id") or "") != str(payload.guild_id):
+            raise HTTPException(status_code=400, detail="Evidence belongs to another server")
+        if str(evidence.get("author_id") or "") != str(payload.target_user_id):
+            raise HTTPException(status_code=400, detail="Evidence author does not match the target user")
+    settings = normalize_moderation_settings(config.get("moderation_settings", {}).get(str(payload.guild_id), {}))
+    action = apply_moderation_action(payload, settings)
+    case = {
+        "case_id": next_case_id(config, payload.guild_id),
+        "guild_id": str(payload.guild_id),
+        "target_user_id": str(payload.target_user_id),
+        "target_display": payload.target_display.strip(),
+        "rule_id": payload.rule_id.strip(),
+        "rule_name": payload.rule_name.strip(),
+        "rule_snapshot": {
+            "rule_id": payload.rule_id.strip(),
+            "number": payload.rule_number.strip(),
+            "name": payload.rule_name.strip() or payload.violation_type.strip(),
+            "reason": payload.reason.strip(),
+            "severity": payload.severity,
+            "action": action,
+            "timeout_minutes": int(payload.timeout_minutes or 0),
+            "remove_role_id": str(payload.remove_role_id or ""),
+        } if payload.rule_id else {},
+        "rule_number": payload.rule_number.strip(),
+        "violation_type": payload.violation_type.strip(),
+        "severity": payload.severity if payload.severity in ("normal", "serious", "red_line") else "normal",
+        "action": action,
+        "reason": payload.reason.strip(),
+        "evidence_url": str(evidence.get("jump_url") or payload.evidence_url).strip(),
+        "evidence_snapshot": evidence,
+        "notes": payload.notes.strip(),
+        "status": "open",
+        "status_history": [],
+        "actor": request_actor(),
+        "ts": int(time.time()),
+    }
+    append_moderation_case(payload.guild_id, case)
+    log_channel_id = payload.log_channel_id or settings.get("log_channel_id")
+    if log_channel_id:
+        send_moderation_log(case, log_channel_id)
+    append_audit_log("created_case", "moderation", payload.guild_id, case["case_id"], {"action": action, "target": case["target_user_id"]}, request_actor())
+    return case
+
+
+@app.patch("/api/moderation/{guild_id}/cases/{case_id}", dependencies=[Depends(require_admin)])
+def resolve_moderation_case(guild_id: str, case_id: str, payload: ModerationResolvePayload):
+    status = payload.status if payload.status in ("open", "accepted", "rejected", "escalated", "resolved") else "resolved"
+    config = load_config()
+    existing = next(
+        (item for item in config.get("moderation_cases", {}).get(str(guild_id), []) if str(item.get("case_id")) == str(case_id)),
+        None,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Moderation case not found")
+    updated = update_moderation_case(
+        guild_id,
+        case_id,
+        status_update(existing, status, request_actor(), payload.notes.strip()),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Moderation case not found")
+    append_audit_log("updated_case", "moderation", guild_id, case_id, {"status": status}, request_actor())
+    return updated
+
+
+@app.get("/api/tickets/{guild_id}", dependencies=[Depends(require_admin)])
+def get_tickets(
+    guild_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    view: str = Query("active", pattern="^(active|archive|all)$"),
+):
+    config = load_config()
+    all_tickets = config.get("tickets", {}).get(str(guild_id), [])
+    return {
+        "settings": normalize_ticket_settings(config.get("ticket_settings", {}).get(str(guild_id), {})),
+        "tickets": filter_status_view(all_tickets, view, "ticket")[:limit],
+        "counts": status_counts(all_tickets, "ticket"),
+        "view": view,
+    }
+
+
+@app.put("/api/tickets/{guild_id}/settings", dependencies=[Depends(require_admin)])
+def save_ticket_settings(guild_id: str, payload: TicketSettingsPayload):
+    existing = normalize_ticket_settings(load_config().get("ticket_settings", {}).get(str(guild_id), {}))
+    data = model_to_dict(payload)
+    if not data.get("panel_message_id"):
+        data["panel_message_id"] = existing.get("panel_message_id", "")
+    settings = normalize_ticket_settings(data)
+    set_ticket_settings(guild_id, settings)
+    append_audit_log("saved_settings", "tickets", guild_id, settings.get("panel_message_id", ""), settings, request_actor())
+    return settings
+
+
+@app.post("/api/tickets/{guild_id}/publish", dependencies=[Depends(require_admin)])
+def publish_ticket_panel(guild_id: str):
+    settings = normalize_ticket_settings(load_config().get("ticket_settings", {}).get(str(guild_id), {}))
+    channel_id = str(settings.get("ticket_channel_id") or "")
+    if not channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Choose a ticket channel")
+    cached_guild_channel(guild_id, channel_id)
+
+    payload = ticket_panel_payload(guild_id, settings)
+    panel_message_id = str(settings.get("panel_message_id") or "")
+    if panel_message_id:
+        try:
+            discord_request("PATCH", f"/channels/{channel_id}/messages/{panel_message_id}", payload)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            panel_message_id = ""
+    if not panel_message_id:
+        message = discord_request("POST", f"/channels/{channel_id}/messages", payload)
+        panel_message_id = message["id"]
+
+    settings["panel_message_id"] = panel_message_id
+    set_ticket_settings(guild_id, settings)
+    append_audit_log("published_panel", "tickets", guild_id, panel_message_id, {"channel_id": channel_id}, request_actor())
+    return {"ok": True, "message_id": panel_message_id, "settings": settings}
+
+
+@app.patch("/api/tickets/{guild_id}/{ticket_id}", dependencies=[Depends(require_admin)])
+def update_ticket_status(guild_id: str, ticket_id: str, payload: TicketStatusPayload):
+    status = payload.status if payload.status in ("open", "resolved", "rejected", "escalated") else "resolved"
+    config = load_config()
+    existing = next(
+        (item for item in config.get("tickets", {}).get(str(guild_id), []) if str(item.get("ticket_id")) == str(ticket_id)),
+        None,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    updated = update_ticket(
+        guild_id,
+        ticket_id,
+        status_update(existing, status, request_actor(), payload.notes.strip(), kind="ticket"),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    append_audit_log("updated_ticket", "tickets", guild_id, ticket_id, {"status": status}, request_actor())
+    return updated
+
+
 @app.post("/api/messages", dependencies=[Depends(require_admin)])
 def send_message(payload: MessagePayload):
     if not payload.channel_id.isdigit():
@@ -804,8 +1653,12 @@ def send_message(payload: MessagePayload):
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    channel = discord_request("GET", f"/channels/{payload.channel_id}")
-    guild_id = channel.get("guild_id", "dm")
+    if payload.guild_id.isdigit():
+        cached_guild_channel(payload.guild_id, payload.channel_id)
+        guild_id = payload.guild_id
+    else:
+        channel = cached_channel(payload.channel_id)
+        guild_id = channel.get("guild_id", "dm")
     body = {}
     record = {
         "channel_id": payload.channel_id,
@@ -848,8 +1701,12 @@ def create_reaction_role(payload: ReactionRolePayload):
         raise HTTPException(status_code=400, detail="Channel ID must be numeric")
     if not payload.mappings:
         raise HTTPException(status_code=400, detail="Add at least one role mapping")
-    channel = discord_request("GET", f"/channels/{payload.channel_id}")
-    guild_id = channel.get("guild_id")
+    if payload.guild_id.isdigit():
+        cached_guild_channel(payload.guild_id, payload.channel_id)
+        guild_id = payload.guild_id
+    else:
+        channel = cached_channel(payload.channel_id)
+        guild_id = channel.get("guild_id")
     if not guild_id:
         raise HTTPException(status_code=400, detail="Reaction roles must be in a server channel")
 

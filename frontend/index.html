@@ -20,6 +20,8 @@
       <button class="nav" data-view="messages">Send Message</button>
       <button class="nav" data-view="roles">Reaction Roles</button>
       <button class="nav" data-view="onboarding">New Member Rules</button>
+      <button class="nav" data-view="welcome">Welcome Automation</button>
+      <button class="nav" data-view="moderation">Moderation</button>
       <button class="nav" data-view="saved">Saved</button>
       <button class="nav" data-view="settings">Settings</button>
       <button id="logoutBtn" class="nav danger">Logout</button>
@@ -47,7 +49,9 @@
           </div>
           <button id="refreshBtn" class="secondary">Refresh</button>
         </header>
+        <div id="discordRateLimitBanner" class="notice hidden" role="status"></div>
 
+        <!-- Overview: bot status, quick actions, release notes, and health checks. -->
         <section id="overview" class="view">
           <div class="stats">
             <article class="stat"><span>Storage</span><strong>SQLite</strong></article>
@@ -74,6 +78,8 @@
               <button data-jump="messages">Send Message</button>
               <button data-jump="roles" class="secondary">Create Role Panel</button>
               <button data-jump="onboarding" class="secondary">New Member Rules</button>
+              <button data-jump="welcome" class="secondary">Welcome Automation</button>
+              <button data-jump="moderation" class="secondary">Moderation Cases</button>
               <button data-jump="saved" class="secondary">Manage Saved</button>
             </div>
           </div>
@@ -92,6 +98,7 @@
           </div>
         </section>
 
+        <!-- Send Message: compose announcements, insert mentions, and preview payloads. -->
         <section id="messages" class="view hidden">
           <div class="panel">
             <h2>Send Message</h2>
@@ -115,6 +122,10 @@
                 <label>Mention Member<input id="mentionMemberSearch" placeholder="Search member name" /></label>
                 <div id="mentionMemberResults" class="mention-results dropdown-menu"></div>
               </div>
+              <div class="mention-tool dropdown">
+                <label>Mention Channel<input id="mentionChannelSearch" placeholder="Search channel name" /></label>
+                <div id="mentionChannelResults" class="mention-results dropdown-menu"></div>
+              </div>
             </div>
             <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>
             <div class="preview-box">
@@ -129,6 +140,7 @@
           </div>
         </section>
 
+        <!-- Reaction Roles: create manual dropdown, button, or reaction role panels. -->
         <section id="roles" class="view hidden">
           <div class="panel">
             <h2>Reaction Role Panel</h2>
@@ -176,40 +188,193 @@
           </div>
         </section>
 
+        <!-- New Member Rules: publish a public language selector and reply with private rules. -->
         <section id="onboarding" class="view hidden">
           <div class="panel">
             <h2>New Member Rules</h2>
             <div class="grid three">
               <label>Server<select id="obGuild"></select></label>
-              <label>Panel Channel<select id="obChannel"></select></label>
-              <label>Member Role<select id="obRole"></select></label>
+              <label>Rules Channel<select id="obChannel"></select></label>
+              <label>Common Member Role (Optional)<select id="obFanRole"></select></label>
             </div>
-            <label class="check"><input id="obEnabled" type="checkbox" /> Enable onboarding gate</label>
+            <label class="check"><input id="obEnabled" type="checkbox" /> Enable private rules gate</label>
+            <h3>Language Panel</h3>
+            <div class="grid three">
+              <label>Panel Title<input id="obPanelTitle" placeholder="Choose your rules language" /></label>
+              <label>Panel Color<select id="obPanelColor"></select></label>
+              <label>Select Placeholder<input id="obPanelPlaceholder" placeholder="Select language" /></label>
+            </div>
+            <label>Panel Description<textarea id="obPanelDescription" rows="3"></textarea></label>
+            <h3>Private Rules Embed</h3>
+            <div class="grid three">
+              <label>Rules Title<input id="obRulesTitle" placeholder="{label} Rules" /></label>
+              <label>Rules Color<select id="obRulesColor"></select></label>
+              <label>Agree Button<input id="obAgreeLabel" placeholder="Agree" /></label>
+            </div>
+            <label>Rules Footer<input id="obRulesFooter" placeholder="Optional footer" /></label>
             <div class="language-grid">
-              <article class="language-card" data-lang="en">
-                <label class="check"><input id="obLangEnabledEn" type="checkbox" /> English</label>
-                <label>Label<input id="obLangLabelEn" placeholder="English" /></label>
-                <label>Rules<textarea id="obLangRulesEn" rows="5"></textarea></label>
-              </article>
-              <article class="language-card" data-lang="zh">
+              <article class="language-card">
                 <label class="check"><input id="obLangEnabledZh" type="checkbox" /> Chinese</label>
-                <label>Label<input id="obLangLabelZh" placeholder="中文" /></label>
+                <label>Chinese Role<select id="obLangRoleZh"></select></label>
                 <label>Rules<textarea id="obLangRulesZh" rows="5"></textarea></label>
               </article>
-              <article class="language-card" data-lang="ms">
-                <label class="check"><input id="obLangEnabledMs" type="checkbox" /> Malay</label>
-                <label>Label<input id="obLangLabelMs" placeholder="Malay" /></label>
-                <label>Rules<textarea id="obLangRulesMs" rows="5"></textarea></label>
+              <article class="language-card">
+                <label class="check"><input id="obLangEnabledEn" type="checkbox" /> English</label>
+                <label>English Role<select id="obLangRoleEn"></select></label>
+                <label>Rules<textarea id="obLangRulesEn" rows="5"></textarea></label>
+              </article>
+              <article class="language-card">
+                <label class="check"><input id="obLangEnabledJa" type="checkbox" /> Japanese</label>
+                <label>Japanese Role<select id="obLangRoleJa"></select></label>
+                <label>Rules<textarea id="obLangRulesJa" rows="5"></textarea></label>
               </article>
             </div>
-            <p id="obPanelInfo" class="muted">No language panel published yet.</p>
+            <p id="obInfo" class="muted">Members choose one language. Members who already have its role only see the rules.</p>
             <div class="actions">
-              <button id="saveOnboardingBtn" class="secondary">Save Rules</button>
-              <button id="publishOnboardingBtn">Publish Language Panel</button>
+              <button id="loadServerRulesBtn" class="secondary">Load Server Rules</button>
+              <button id="saveOnboardingBtn">Save New Member Rules</button>
+              <button id="publishOnboardingBtn" class="secondary">Publish Language Panel</button>
             </div>
           </div>
         </section>
 
+        <!-- Welcome Automation: greet new members now and optionally remind them later. -->
+        <section id="welcome" class="view hidden">
+          <div class="panel">
+            <h2>Welcome Automation</h2>
+            <div class="grid three">
+              <label>Server<select id="welcomeGuild"></select></label>
+              <label>Welcome Channel<select id="welcomeChannel"></select></label>
+              <label>Role Channel<select id="welcomeRolesChannel"></select></label>
+            </div>
+            <label class="check"><input id="welcomeEnabled" type="checkbox" /> Enable automatic welcome message</label>
+            <label>Welcome Message<textarea id="welcomeContent" rows="6" placeholder="Required. Use the variables below."></textarea></label>
+            <div class="actions template-actions">
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{member}">{member}</button>
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{server}">{server}</button>
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{rules_channel}">{rules_channel}</button>
+              <button type="button" class="secondary welcome-token" data-target="welcomeContent" data-token="{roles_channel}">{roles_channel}</button>
+            </div>
+            <div class="preview-box">
+              <div class="preview-label">Welcome Preview</div>
+              <div id="welcomePreview" class="discord-preview"></div>
+            </div>
+
+            <h3>Follow-up Reminder</h3>
+            <label class="check"><input id="followUpEnabled" type="checkbox" /> Send one follow-up in the welcome channel</label>
+            <div class="grid two">
+              <label>Delay<input id="followUpDelayValue" type="number" min="1" value="1" /></label>
+              <label>Unit<select id="followUpDelayUnit"><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></label>
+            </div>
+            <label>Follow-up Message<textarea id="followUpContent" rows="6" placeholder="Required when follow-up is enabled."></textarea></label>
+            <div class="actions template-actions">
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{member}">{member}</button>
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{server}">{server}</button>
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{rules_channel}">{rules_channel}</button>
+              <button type="button" class="secondary welcome-token" data-target="followUpContent" data-token="{roles_channel}">{roles_channel}</button>
+            </div>
+            <div class="preview-box">
+              <div class="preview-label">Follow-up Preview</div>
+              <div id="followUpPreview" class="discord-preview"></div>
+            </div>
+            <p id="welcomeInfo" class="muted">Completed New Member Rules members will not receive the follow-up.</p>
+            <div class="actions">
+              <button id="saveWelcomeBtn">Save Welcome Automation</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Moderation: staff-created cases, manual actions, ticket intake, and appeal status tracking. -->
+        <section id="moderation" class="view hidden">
+          <div class="panel">
+            <h2>Settings</h2>
+            <div class="grid three">
+              <label>Server<select id="modGuild"></select></label>
+              <label>Log Channel<select id="modLogChannel"></select></label>
+              <label>Probation Role<select id="modProbationRole"></select></label>
+            </div>
+            <div class="actions">
+              <button id="saveModSettingsBtn" class="secondary">Save Moderation Settings</button>
+              <button id="refreshModBtn" class="secondary">Refresh Cases</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Moderation Rules</h2>
+            <div class="grid three">
+              <label>Rule Number<input id="ruleNumber" placeholder="1 / 6 / red line" /></label>
+              <label>Rule Name<input id="ruleName" placeholder="Spam / Privacy / NSFW" /></label>
+              <label>Severity<select id="ruleSeverity"><option value="normal">Normal</option><option value="serious">Serious</option><option value="red_line">Red Line</option></select></label>
+              <label>Default Action<select id="ruleAction"><option value="warning">Warning</option><option value="probation">Give Probation Role</option><option value="timeout">Timeout</option><option value="remove_role">Remove Role</option><option value="note">Record Only</option></select></label>
+              <label>Timeout Minutes<input id="ruleTimeoutMinutes" type="number" min="0" value="0" /></label>
+              <label>Role To Remove<select id="ruleRemoveRole"></select></label>
+            </div>
+            <label>Default Reason<textarea id="ruleReason" rows="3" placeholder="Reason copied into new cases"></textarea></label>
+            <label class="check"><input id="ruleEnabled" type="checkbox" checked /> Available in Dashboard and Discord</label>
+            <div class="actions">
+              <button id="addRuleBtn">Add Rule</button>
+              <button id="cancelRuleEditBtn" class="secondary hidden">Cancel Edit</button>
+              <button id="saveRulesBtn" class="secondary">Save Rules</button>
+            </div>
+            <div id="ruleList" class="audit-list"></div>
+          </div>
+          <div class="panel">
+            <h2>Create Case</h2>
+            <div class="grid three">
+              <label>Rule Template<select id="modRuleTemplate"><option value="custom">Custom</option></select></label>
+              <label>Target User ID<input id="modTargetId" placeholder="Discord user ID" /></label>
+              <label>Target Display<input id="modTargetDisplay" placeholder="Optional display name" /></label>
+              <label>Rule Number<input id="modRuleNumber" placeholder="1 / 6 / red line" /></label>
+              <label>Violation Type<input id="modViolationType" placeholder="privacy / spam / NSFW" /></label>
+              <label>Severity<select id="modSeverity"><option value="normal">Normal</option><option value="serious">Serious</option><option value="red_line">Red Line</option></select></label>
+              <label>Action<select id="modAction"><option value="warning">Warning</option><option value="probation">Give Probation Role</option><option value="timeout">Timeout</option><option value="remove_role">Remove Role</option><option value="note">Record Only</option></select></label>
+              <label>Timeout Minutes<input id="modTimeoutMinutes" type="number" min="0" value="0" /></label>
+              <label>Role To Remove<select id="modRemoveRole"></select></label>
+            </div>
+            <label>Reason<textarea id="modReason" rows="4" placeholder="What happened?"></textarea></label>
+            <label>Evidence URL<input id="modEvidenceUrl" placeholder="Paste a Discord Message Link" /></label>
+            <div class="actions"><button id="fetchEvidenceBtn" class="secondary">Fetch Discord Message</button></div>
+            <div id="modEvidencePreview" class="discord-preview muted">No Discord evidence loaded.</div>
+            <label>Notes<textarea id="modNotes" rows="3" placeholder="Internal staff notes"></textarea></label>
+            <div class="actions">
+              <button id="createModCaseBtn">Create Case</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Case Log</h2>
+            <div class="actions view-tabs">
+              <button id="caseActiveTab">Active <span id="caseActiveCount">0</span></button>
+              <button id="caseArchiveTab" class="secondary">Archive <span id="caseArchiveCount">0</span></button>
+            </div>
+            <div id="modCaseList" class="audit-list"></div>
+          </div>
+          <div class="panel">
+            <h2>Ticket Intake</h2>
+            <div class="grid three">
+              <label>Ticket Channel<select id="ticketChannel"></select></label>
+              <label>Staff Log Channel<select id="ticketLogChannel"></select></label>
+              <label>Panel Color<select id="ticketPanelColor"></select></label>
+              <label>Panel Title<input id="ticketPanelTitle" placeholder="Need help?" /></label>
+              <label>Button Label<input id="ticketButtonLabel" placeholder="Open Ticket" /></label>
+            </div>
+            <label>Panel Description<textarea id="ticketPanelDescription" rows="3" placeholder="Explain what this ticket button is for."></textarea></label>
+            <p id="ticketInfo" class="muted">Publish a public ticket entry. Ticket content is only sent to staff log and dashboard.</p>
+            <div class="actions">
+              <button id="saveTicketSettingsBtn" class="secondary">Save Ticket Settings</button>
+              <button id="publishTicketPanelBtn">Publish Ticket Panel</button>
+              <button id="refreshTicketsBtn" class="secondary">Refresh Tickets</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Tickets</h2>
+            <div class="actions view-tabs">
+              <button id="ticketActiveTab">Active <span id="ticketActiveCount">0</span></button>
+              <button id="ticketArchiveTab" class="secondary">Archive <span id="ticketArchiveCount">0</span></button>
+            </div>
+            <div id="ticketList" class="audit-list"></div>
+          </div>
+        </section>
+
+        <!-- Saved: review previously sent messages, role panels, and admin activity. -->
         <section id="saved" class="view hidden">
           <div class="panel">
             <h2>Saved Messages & Panels</h2>
@@ -221,6 +386,7 @@
           </div>
         </section>
 
+        <!-- Settings: browser-local dashboard API URL configuration. -->
         <section id="settings" class="view hidden">
           <div class="panel">
             <h2>Settings</h2>
@@ -233,7 +399,7 @@
     </main>
 
     <div id="toast" class="toast hidden"></div>
-    <script src="./config.js?v=20260702-new-member-rules"></script>
-    <script src="./app.js?v=20260702-new-member-rules"></script>
+    <script src="./config.js?v=20260714-error-prevention"></script>
+    <script src="./app.js?v=20260720-roles-channel"></script>
   </body>
 </html>

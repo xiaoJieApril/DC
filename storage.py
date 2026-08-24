@@ -20,6 +20,14 @@ DEFAULT_CONFIG = {
     # latter is a short operational log, while cases are the source of truth
     # for rolling violation counts.
     "moderation_cases": {},
+    "welcome_automation": {},
+    "welcome_jobs": [],
+    "moderation_cases": {},
+    "moderation_settings": {},
+    "moderation_rules": {},
+    "moderation_drafts": {},
+    "tickets": {},
+    "ticket_settings": {},
     "audit_logs": [],
 }
 
@@ -38,11 +46,20 @@ def storage_name():
 def normalize_config(data):
     if not isinstance(data, dict):
         return deepcopy(DEFAULT_CONFIG)
+    # Keep every JSON-backed feature section available after config upgrades.
     return {
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
         "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
+        "welcome_automation": data.get("welcome_automation", {}) if isinstance(data.get("welcome_automation", {}), dict) else {},
+        "welcome_jobs": data.get("welcome_jobs", []) if isinstance(data.get("welcome_jobs", []), list) else [],
+        "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
+        "moderation_settings": data.get("moderation_settings", {}) if isinstance(data.get("moderation_settings", {}), dict) else {},
+        "moderation_rules": data.get("moderation_rules", {}) if isinstance(data.get("moderation_rules", {}), dict) else {},
+        "moderation_drafts": data.get("moderation_drafts", {}) if isinstance(data.get("moderation_drafts", {}), dict) else {},
+        "tickets": data.get("tickets", {}) if isinstance(data.get("tickets", {}), dict) else {},
+        "ticket_settings": data.get("ticket_settings", {}) if isinstance(data.get("ticket_settings", {}), dict) else {},
         "audit_logs": data.get("audit_logs", []) if isinstance(data.get("audit_logs", []), list) else [],
     }
 
@@ -125,6 +142,196 @@ def upsert_onboarding(guild_id, payload):
         config = _load_config_unlocked()
         config.setdefault("onboarding", {})[str(guild_id)] = dict(payload)
         _save_config_unlocked(config)
+
+
+def upsert_welcome_automation(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("welcome_automation", {})[str(guild_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def enqueue_welcome_job(payload):
+    job = dict(payload)
+    with config_lock():
+        config = _load_config_unlocked()
+        jobs = config.setdefault("welcome_jobs", [])
+        if any(str(item.get("job_id")) == str(job.get("job_id")) for item in jobs):
+            return False
+        jobs.append(job)
+        _save_config_unlocked(config)
+    return True
+
+
+def claim_due_welcome_jobs(now, limit=20, lease_seconds=120):
+    claimed = []
+    with config_lock():
+        config = _load_config_unlocked()
+        for job in config.setdefault("welcome_jobs", []):
+            if len(claimed) >= limit:
+                break
+            status = str(job.get("status") or "pending")
+            due_at = float(job.get("due_at") or 0)
+            lease_until = float(job.get("lease_until") or 0)
+            if due_at > now or (status == "processing" and lease_until > now):
+                continue
+            if status not in ("pending", "processing"):
+                continue
+            job["status"] = "processing"
+            job["lease_until"] = now + lease_seconds
+            claimed.append(deepcopy(job))
+        if claimed:
+            _save_config_unlocked(config)
+    return claimed
+
+
+def finish_welcome_job(job_id):
+    with config_lock():
+        config = _load_config_unlocked()
+        jobs = config.setdefault("welcome_jobs", [])
+        remaining = [item for item in jobs if str(item.get("job_id")) != str(job_id)]
+        if len(remaining) == len(jobs):
+            return False
+        config["welcome_jobs"] = remaining
+        _save_config_unlocked(config)
+    return True
+
+
+def retry_welcome_job(job_id, due_at, error=""):
+    with config_lock():
+        config = _load_config_unlocked()
+        for job in config.setdefault("welcome_jobs", []):
+            if str(job.get("job_id")) != str(job_id):
+                continue
+            job["status"] = "pending"
+            job["due_at"] = float(due_at)
+            job["lease_until"] = 0
+            job["attempts"] = int(job.get("attempts") or 0) + 1
+            job["last_error"] = str(error or "")[:500]
+            _save_config_unlocked(config)
+            return True
+    return False
+
+
+def cancel_pending_welcome_jobs(guild_id):
+    guild_id = str(guild_id)
+    with config_lock():
+        config = _load_config_unlocked()
+        jobs = config.setdefault("welcome_jobs", [])
+        remaining = [item for item in jobs if str(item.get("guild_id")) != guild_id]
+        removed = len(jobs) - len(remaining)
+        if removed:
+            config["welcome_jobs"] = remaining
+            _save_config_unlocked(config)
+        return removed
+
+
+def set_moderation_settings(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("moderation_settings", {})[str(guild_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def set_moderation_rules(guild_id, rules):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("moderation_rules", {})[str(guild_id)] = [dict(item) for item in rules]
+        _save_config_unlocked(config)
+
+
+def save_moderation_draft(draft_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        drafts = config.setdefault("moderation_drafts", {})
+        now = time.time()
+        for key in [key for key, item in drafts.items() if float(item.get("expires_at") or 0) < now]:
+            drafts.pop(key, None)
+        drafts[str(draft_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def get_moderation_draft(draft_id, now=None):
+    config = load_config()
+    draft = config.get("moderation_drafts", {}).get(str(draft_id))
+    if not draft:
+        return None
+    if now is not None and float(draft.get("expires_at") or 0) < float(now):
+        delete_moderation_draft(draft_id)
+        return None
+    return draft
+
+
+def delete_moderation_draft(draft_id):
+    with config_lock():
+        config = _load_config_unlocked()
+        removed = config.setdefault("moderation_drafts", {}).pop(str(draft_id), None)
+        if removed is not None:
+            _save_config_unlocked(config)
+        return removed
+
+
+def claim_moderation_draft(draft_id, now):
+    with config_lock():
+        config = _load_config_unlocked()
+        draft = config.setdefault("moderation_drafts", {}).get(str(draft_id))
+        if not draft or float(draft.get("expires_at") or 0) < float(now) or draft.get("status") != "pending":
+            return None
+        draft["status"] = "processing"
+        _save_config_unlocked(config)
+        return deepcopy(draft)
+
+
+def append_moderation_case(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_cases = config.setdefault("moderation_cases", {}).setdefault(str(guild_id), [])
+        guild_cases.insert(0, dict(payload))
+        del guild_cases[250:]
+        _save_config_unlocked(config)
+    return payload
+
+
+def update_moderation_case(guild_id, case_id, updates):
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_cases = config.setdefault("moderation_cases", {}).setdefault(str(guild_id), [])
+        for item in guild_cases:
+            if str(item.get("case_id")) == str(case_id):
+                item.update(dict(updates))
+                _save_config_unlocked(config)
+                return item
+    return None
+
+
+def set_ticket_settings(guild_id, payload):
+    with config_lock():
+        config = _load_config_unlocked()
+        config.setdefault("ticket_settings", {})[str(guild_id)] = dict(payload)
+        _save_config_unlocked(config)
+
+
+def append_ticket(guild_id, payload):
+    # Keep recent ticket intake in the same JSON store used by the dashboard and bot.
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_tickets = config.setdefault("tickets", {}).setdefault(str(guild_id), [])
+        guild_tickets.insert(0, dict(payload))
+        del guild_tickets[250:]
+        _save_config_unlocked(config)
+    return payload
+
+
+def update_ticket(guild_id, ticket_id, updates):
+    with config_lock():
+        config = _load_config_unlocked()
+        guild_tickets = config.setdefault("tickets", {}).setdefault(str(guild_id), [])
+        for item in guild_tickets:
+            if str(item.get("ticket_id")) == str(ticket_id):
+                item.update(dict(updates))
+                _save_config_unlocked(config)
+                return item
+    return None
 
 
 def delete_record(section, guild_id, message_id):

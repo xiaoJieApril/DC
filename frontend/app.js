@@ -9,25 +9,50 @@ const state = {
   mappings: [],
   savedRows: [],
   auditRows: [],
+  moderation: { settings: null, rules: [], cases: [], counts: { active: 0, archive: 0 }, view: "active", evidence: null, editingRule: -1 },
+  tickets: { settings: null, tickets: [], counts: { active: 0, archive: 0 }, view: "active" },
   onboarding: null,
+  welcome: null,
   editingMessage: null,
   editingRolePanel: null,
   botStatus: null,
   mentionDropdown: "",
+  discordCooldownUntil: 0,
+  dashboardCooldownUntil: 0,
+  dashboardCooldownScope: "",
+  discordCacheTime: "",
 };
 
 const colors = ["Blurple", "Green", "Red", "Yellow", "White"];
 const commonEmojis = ["🎮", "✅", "⭐", "🔥", "💬", "🎨", "❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣"];
 // Release notes are frontend-owned for now; no storage or admin editor is needed.
 const latestUpdates = [
+  "Send Message can insert clickable Discord channel mentions.",
+  "Moderation Rules power Dashboard cases and Discord message context cases.",
+  "Discord Message Links can fill target and evidence snapshots automatically.",
+  "Resolved moderation cases and tickets now move into Archive tabs.",
+  "Welcome Automation greets new members and can send one delayed rules reminder.",
   "New member language rules gate.",
   "Members can choose language and see private rules.",
   "Agreeing to rules gives the configured member role.",
   "Send Message can mention roles and members from the dashboard.",
   "Role/member mention tokens are inserted automatically.",
   "Message preview now shows mention chips.",
+  "Moderation cases can track warnings, probation, timeouts, and appeals.",
+  "Ticket intake lets members privately submit staff requests from Discord.",
 ];
 let memberSearchTimer = null;
+let memberSearchController = null;
+let guildsPromise = null;
+let initialLoadPromise = null;
+let guildLoadAttempted = false;
+let dashboardInitialized = false;
+const activeActions = new Set();
+
+const discordWriteButtonIds = [
+  "sendMsgBtn", "updateMsgBtn", "postRRBtn", "updateRRBtn",
+  "publishOnboardingBtn", "createModCaseBtn", "publishTicketPanelBtn",
+];
 
 function $(id) {
   return document.getElementById(id);
@@ -41,31 +66,59 @@ function toast(message) {
 }
 
 async function runAction(label, fn) {
+  if (activeActions.has(label)) {
+    toast(`${label} is already running.`);
+    return;
+  }
+  activeActions.add(label);
   try {
     await fn();
   } catch (err) {
     toast(`${label} failed: ${err.message}`);
+  } finally {
+    activeActions.delete(label);
   }
 }
 
 async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const { idempotencyKey, ...fetchOptions } = options;
+  const headers = { "Content-Type": "application/json", ...(fetchOptions.headers || {}) };
   if (state.accessToken) {
     headers.Authorization = `Bearer ${state.accessToken}`;
+  }
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    headers["X-Idempotency-Key"] = idempotencyKey || makeRequestId();
   }
   const response = await fetch(`${state.apiBase}${path}`, {
     credentials: "include",
     headers,
-    ...options,
+    ...fetchOptions,
   });
   if (!response.ok) {
     let detail = await response.text();
+    let payload = detail;
     try {
-      detail = (JSON.parse(detail).detail || detail).toString();
+      const parsed = JSON.parse(detail);
+      payload = parsed.detail || parsed;
     } catch (_) {
       // keep raw detail
     }
-    throw new Error(detail);
+    if (payload && typeof payload === "object") {
+      const error = new Error(payload.message || "Request failed");
+      error.code = payload.code || "request_failed";
+      error.scope = payload.scope || "";
+      error.retryAfterSeconds = Number(payload.retry_after_seconds || (response.status === 503 ? 60 : 0));
+      if (error.retryAfterSeconds) {
+        if (error.code.startsWith("discord_") || error.scope.startsWith("discord_")) {
+          setDiscordCooldown(error.retryAfterSeconds);
+        } else if (response.status === 429) {
+          setDashboardCooldown(error.retryAfterSeconds, error.scope);
+        }
+      }
+      throw error;
+    }
+    throw new Error(String(payload));
   }
   if (response.status === 204) return null;
   return response.json();
@@ -90,10 +143,121 @@ function fillSelectMessage(select, message) {
 }
 
 function fillColors() {
-  ["msgColor", "rrColor"].forEach((id) => {
+  ["msgColor", "rrColor", "obPanelColor", "obRulesColor", "ticketPanelColor"].forEach((id) => {
+    if (!$(id)) return;
     fillSelect($(id), colors, (item) => item, (item) => item);
   });
 }
+
+function makeRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function requireValue(value, message) {
+  if (!String(value ?? "").trim()) throw new Error(message);
+}
+
+function requireDiscordWriteReady() {
+  const remaining = Math.max(0, Math.ceil((state.discordCooldownUntil - Date.now()) / 1000));
+  if (remaining > 0) throw new Error(`Discord is cooling down. Try again in ${remaining}s.`);
+}
+
+function validateWelcomeForm() {
+  const data = collectWelcomeForm();
+  if (!data.enabled) return data;
+  requireValue(data.channel_id, "Choose a welcome channel.");
+  requireValue(data.welcome_content, "Welcome message is required.");
+  if (data.follow_up_enabled) {
+    requireValue(data.follow_up_content, "Follow-up message is required.");
+    const seconds = data.delay_value * ({ minutes: 60, hours: 3600, days: 86400 }[data.delay_unit] || 0);
+    if (!Number.isFinite(seconds) || seconds < 60 || seconds > 30 * 86400) {
+      throw new Error("Follow-up delay must be between 1 minute and 30 days.");
+    }
+  }
+  return data;
+}
+
+function validateOnboardingPublish() {
+  const data = collectOnboardingForm();
+  if (!data.enabled) throw new Error("Enable the private rules gate first.");
+  requireValue(data.channel_id, "Choose a rules channel.");
+  const enabled = Object.values(data.languages || {}).filter((item) => item.enabled);
+  if (!enabled.length) throw new Error("Enable at least one language.");
+  const incomplete = enabled.find((item) => !item.rules.trim() || !item.language_role_id);
+  if (incomplete) throw new Error(`Add rules text and a Fans Role for ${incomplete.label}.`);
+}
+
+function validateModerationRulesBeforeSave() {
+  const rules = state.moderation.rules || [];
+  const enabled = rules.filter((item) => item.enabled);
+  if (enabled.length > 25) throw new Error("A maximum of 25 rules can be enabled.");
+  const numbers = new Set();
+  for (const rule of rules) {
+    requireValue(rule.number, "Every rule needs a number.");
+    requireValue(rule.name, `Rule ${rule.number || "(unnumbered)"} needs a name.`);
+    requireValue(rule.reason, `Rule ${rule.number || "(unnumbered)"} needs a reason.`);
+    if (numbers.has(rule.number)) throw new Error(`Rule number ${rule.number} is duplicated.`);
+    numbers.add(rule.number);
+    if (rule.action === "timeout" && Number(rule.timeout_minutes || 0) <= 0) {
+      throw new Error(`Rule ${rule.number} needs timeout minutes.`);
+    }
+    if (rule.action === "remove_role" && !rule.remove_role_id) {
+      throw new Error(`Rule ${rule.number} needs a role to remove.`);
+    }
+  }
+}
+
+function unwrapDiscord(result) {
+  if (!result || Array.isArray(result) || !("data" in result)) return result;
+  const retryAfter = Number(result.retry_after_seconds || 0);
+  if (retryAfter) setDiscordCooldown(retryAfter);
+  if (result.stale) {
+    state.discordCacheTime = result.cached_at || "";
+    renderDiscordProtection();
+  } else if (!retryAfter) {
+    state.discordCacheTime = "";
+    renderDiscordProtection();
+  }
+  return result.data;
+}
+
+function setDiscordCooldown(seconds) {
+  state.discordCooldownUntil = Math.max(state.discordCooldownUntil, Date.now() + Number(seconds || 0) * 1000);
+  renderDiscordProtection();
+}
+
+function setDashboardCooldown(seconds, scope = "dashboard") {
+  state.dashboardCooldownUntil = Math.max(state.dashboardCooldownUntil, Date.now() + Number(seconds || 0) * 1000);
+  state.dashboardCooldownScope = scope || "dashboard";
+  renderDiscordProtection();
+}
+
+function renderDiscordProtection() {
+  const banner = $("discordRateLimitBanner");
+  if (!banner) return;
+  const remaining = Math.max(0, Math.ceil((state.discordCooldownUntil - Date.now()) / 1000));
+  const dashboardRemaining = Math.max(0, Math.ceil((state.dashboardCooldownUntil - Date.now()) / 1000));
+  const blocked = remaining > 0;
+  const dashboardBlocked = dashboardRemaining > 0;
+  $("refreshBtn").disabled = blocked || dashboardBlocked || !!initialLoadPromise;
+  discordWriteButtonIds.forEach((id) => {
+    if ($(id)) $(id).disabled = blocked || dashboardBlocked;
+  });
+  if (dashboardBlocked || blocked || state.discordCacheTime) {
+    const cached = state.discordCacheTime ? ` Showing cached data from ${new Date(state.discordCacheTime).toLocaleString()}.` : "";
+    banner.textContent = dashboardBlocked
+      ? `Dashboard requests are temporarily limited (${state.dashboardCooldownScope}). Try again in ${dashboardRemaining}s.`
+      : blocked
+        ? `Discord is temporarily limiting requests. Try again in ${remaining}s.${cached}`
+        : `Showing cached Discord data from ${new Date(state.discordCacheTime).toLocaleString()}. Local settings can still be saved; use Refresh when Discord is available.`;
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
+setInterval(renderDiscordProtection, 1000);
 
 function setView(name) {
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
@@ -105,7 +269,9 @@ function setView(name) {
     overview: ["Overview", "Manage your Discord bot from the web."],
     messages: ["Send Message", "Send plain text or embeds."],
     roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
-    onboarding: ["New Member Rules", "Configure language rules and the member access role."],
+    onboarding: ["New Member Rules", "Private rules gate with language selection."],
+    welcome: ["Welcome Automation", "Greet new members and send one delayed follow-up."],
+    moderation: ["Moderation", "Record warnings, probation, timeout, and appeal status."],
     saved: ["Saved", "View and remove saved messages and role panels."],
     settings: ["Settings", "Configure this browser's API URL."],
   };
@@ -113,13 +279,17 @@ function setView(name) {
   $("viewSubtitle").textContent = titles[name][1];
   if (name === "onboarding") {
     ensureOnboardingLoaded();
+  } else if (name === "welcome") {
+    ensureWelcomeLoaded();
+  } else if (name === "moderation") {
+    ensureModerationLoaded();
   }
 }
 
 async function ensureOnboardingLoaded() {
   try {
     if (!state.guilds.length) {
-      await loadGuilds();
+      await ensureGuildsLoaded();
       return;
     }
     if (!$("obGuild").options.length) {
@@ -127,7 +297,41 @@ async function ensureOnboardingLoaded() {
     }
     await loadOnboardingControls();
   } catch (err) {
-    $("obPanelInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+    $("obInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+  }
+}
+
+async function ensureWelcomeLoaded() {
+  try {
+    if (!state.guilds.length) await ensureGuildsLoaded();
+    if (!state.guilds.length) {
+      $("welcomeInfo").textContent = "Server list unavailable.";
+      return;
+    }
+    fillGuildSelectors();
+    await refreshWelcomeControls();
+  } catch (err) {
+    $("welcomeInfo").textContent = `Welcome Automation unavailable: ${err.message}`;
+  }
+}
+
+async function ensureModerationLoaded() {
+  try {
+    fillColors();
+    if (!state.guilds.length) {
+      await ensureGuildsLoaded();
+    }
+    if (!state.guilds.length) {
+      fillSelectMessage($("modGuild"), "Server list unavailable");
+      setModerationStatus("Server list unavailable. Use Refresh after the bot/API can read guilds.");
+      setTicketStatus("Ticket list unavailable until a server is loaded.");
+      return;
+    }
+    fillGuildSelectors();
+    await refreshModerationControls();
+  } catch (err) {
+    setModerationStatus(`Could not load moderation data: ${err.message}`);
+    setTicketStatus(`Could not load ticket data: ${err.message}`);
   }
 }
 
@@ -173,13 +377,25 @@ async function checkLogin() {
   }
 }
 
-async function loadInitial() {
-  fillColors();
-  $("apiBaseInput").value = state.apiBase;
-  await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(), loadSaved(), loadAuditLogs()]);
-  renderLatestUpdates();
-  renderMessagePreview();
-  renderRolePreview();
+async function loadInitial(forceDiscord = false) {
+  if (dashboardInitialized && !forceDiscord) return;
+  if (initialLoadPromise) return initialLoadPromise;
+  dashboardInitialized = true;
+  initialLoadPromise = (async () => {
+    fillColors();
+    $("apiBaseInput").value = state.apiBase;
+    await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(forceDiscord), loadSaved(), loadAuditLogs()]);
+    renderLatestUpdates();
+    renderMessagePreview();
+    renderRolePreview();
+  })();
+  renderDiscordProtection();
+  try {
+    await initialLoadPromise;
+  } finally {
+    initialLoadPromise = null;
+    renderDiscordProtection();
+  }
 }
 
 // Render the Latest Update panel on the overview page.
@@ -198,6 +414,7 @@ function renderLatestUpdates() {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
+    if (health.discord && health.discord.retry_after_seconds) setDiscordCooldown(health.discord.retry_after_seconds);
     $("healthBox").textContent = JSON.stringify(health, null, 2);
     document.querySelector(".stat strong").textContent = String(health.storage || "json").toUpperCase();
   } catch (err) {
@@ -262,19 +479,13 @@ async function stopBot() {
   await loadHealth();
 }
 
-async function loadGuilds() {
-  try {
-    state.guilds = await api("/api/discord/guilds");
-  } catch (err) {
-    fillSelectMessage($("msgGuild"), "Server list unavailable");
-    fillSelectMessage($("rrGuild"), "Server list unavailable");
-    fillSelectMessage($("obGuild"), "Server list unavailable");
-    toast(`Server list unavailable: ${err.message}`);
-    return;
+async function loadGuilds(force = false) {
+  if (force) {
+    state.channels = {};
+    state.roles = {};
+    state.emojis = {};
   }
-  fillSelect($("msgGuild"), state.guilds, (g) => g.name, (g) => g.id);
-  fillSelect($("rrGuild"), state.guilds, (g) => g.name, (g) => g.id);
-  fillSelect($("obGuild"), state.guilds, (g) => g.name, (g) => g.id);
+  await ensureGuildsLoaded(force);
   if (state.guilds.length) {
     await Promise.allSettled([
       loadChannels("msg"),
@@ -287,44 +498,122 @@ async function loadGuilds() {
   }
 }
 
+function fillGuildSelectors() {
+  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild"].forEach((id) => {
+    if (!$(id)) return;
+    if (!state.guilds.length) {
+      fillSelectMessage($(id), "No servers available");
+      return;
+    }
+    const current = $(id).value;
+    fillSelect($(id), state.guilds, (g) => g.name, (g) => g.id);
+    if ([...$(id).options].some((option) => option.value === current)) {
+      $(id).value = current;
+    }
+  });
+}
+
+async function ensureGuildsLoaded(force = false) {
+  if (guildsPromise) return guildsPromise;
+  if (state.guilds.length && !force) {
+    fillGuildSelectors();
+    return state.guilds;
+  }
+  if (guildLoadAttempted && !force) {
+    fillGuildSelectors();
+    return state.guilds;
+  }
+  guildLoadAttempted = true;
+  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild"].forEach((id) => {
+    if ($(id)) fillSelectMessage($(id), "Loading servers...");
+  });
+  guildsPromise = (async () => {
+  try {
+    state.guilds = unwrapDiscord(await api("/api/discord/guilds"));
+  } catch (err) {
+    state.guilds = [];
+    fillSelectMessage($("msgGuild"), "Server list unavailable");
+    fillSelectMessage($("rrGuild"), "Server list unavailable");
+    fillSelectMessage($("obGuild"), "Server list unavailable");
+    fillSelectMessage($("welcomeGuild"), "Server list unavailable");
+    fillSelectMessage($("modGuild"), "Server list unavailable");
+    setModerationStatus("Server list unavailable. Check the dashboard API connection and try again.");
+    setTicketStatus("Ticket settings unavailable until the server list loads.");
+    toast(`Server list unavailable: ${err.message}`);
+    return [];
+  }
+  fillGuildSelectors();
+  return state.guilds;
+  })();
+  try {
+    return await guildsPromise;
+  } finally {
+    guildsPromise = null;
+  }
+}
+
+async function getGuildChannels(guildId, force = false) {
+  if (!guildId) return [];
+  if (state.channels[guildId] && !force) return state.channels[guildId];
+  state.channels[guildId] = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/channels`));
+  return state.channels[guildId];
+}
+
+async function getGuildRoles(guildId, force = false) {
+  if (!guildId) return [];
+  if (state.roles[guildId] && !force) return state.roles[guildId];
+  const roles = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/roles`));
+  state.roles[guildId] = roles.sort((a, b) => (b.position || 0) - (a.position || 0));
+  return state.roles[guildId];
+}
+
+async function fillChannelSelect(selectId, guildId, placeholder = "", force = false) {
+  const select = $(selectId);
+  if (!select || !guildId) return [];
+  fillSelectMessage(select, "Loading channels...");
+  try {
+    const channels = await getGuildChannels(guildId, force);
+    const rows = placeholder ? [{ id: "", name: placeholder }, ...channels] : channels;
+    fillSelect(select, rows, (c) => (c.id ? `#${c.name}` : c.name), (c) => c.id);
+    return channels;
+  } catch (err) {
+    fillSelectMessage(select, "Channel list unavailable");
+    throw err;
+  }
+}
+
+async function fillRoleSelect(selectId, guildId, placeholder = "", force = false) {
+  const select = $(selectId);
+  if (!select || !guildId) return [];
+  fillSelectMessage(select, "Loading roles...");
+  try {
+    const roles = await getGuildRoles(guildId, force);
+    const rows = placeholder ? [{ id: "", name: placeholder }, ...roles] : roles;
+    fillSelect(select, rows, (r) => (r.id ? `${r.name} (${r.id})` : r.name), (r) => r.id);
+    return roles;
+  } catch (err) {
+    fillSelectMessage(select, "Role list unavailable");
+    throw err;
+  }
+}
+
 async function loadChannels(prefix) {
   const guildId = $(`${prefix}Guild`).value;
   if (!guildId) return;
-  try {
-    state.channels[guildId] = await api(`/api/discord/guilds/${guildId}/channels`);
-  } catch (err) {
-    fillSelectMessage($(`${prefix}Channel`), "Channel list unavailable");
-    throw err;
-  }
-  fillSelect(
-    $(`${prefix}Channel`),
-    state.channels[guildId],
-    (c) => `#${c.name}`,
-    (c) => c.id,
-  );
+  await fillChannelSelect(`${prefix}Channel`, guildId);
 }
 
 async function loadRoles() {
   const guildId = $("rrGuild").value;
   if (!guildId) return;
-  state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-  state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  fillSelect(
-    $("rrRole"),
-    state.roles[guildId],
-    (r) => `${r.name} (${r.id})`,
-    (r) => r.id,
-  );
+  await fillRoleSelect("rrRole", guildId);
 }
 
 async function loadMessageMentionRoles() {
   // Reuse the roles endpoint so role mentions work without a separate API.
   const guildId = $("msgGuild").value;
   if (!guildId) return;
-  if (!state.roles[guildId]) {
-    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  }
+  await getGuildRoles(guildId);
   renderRoleMentionResults();
   renderMessagePreview();
 }
@@ -332,82 +621,89 @@ async function loadMessageMentionRoles() {
 async function loadOnboardingRoles() {
   const guildId = $("obGuild").value;
   if (!guildId) return;
-  try {
-    if (!state.roles[guildId]) {
-      state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-      state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-    }
-  } catch (err) {
-    fillSelectMessage($("obRole"), "Role list unavailable");
-    throw err;
-  }
-  fillSelect($("obRole"), state.roles[guildId], (r) => `${r.name} (${r.id})`, (r) => r.id);
+  await fillRoleSelect("obFanRole", guildId, "Choose role");
+  await Promise.all([
+    fillRoleSelect("obLangRoleZh", guildId, "Choose Chinese role"),
+    fillRoleSelect("obLangRoleEn", guildId, "Choose English role"),
+    fillRoleSelect("obLangRoleJa", guildId, "Choose Japanese role"),
+  ]);
 }
 
 async function loadOnboardingControls() {
-  $("obPanelInfo").textContent = "Loading New Member Rules selectors...";
-  await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
+  $("obInfo").textContent = "Loading New Member Rules selectors...";
   try {
+    await loadChannels("ob");
+    await loadOnboardingRoles();
     await loadOnboarding();
   } catch (err) {
-    $("obPanelInfo").textContent = `Onboarding settings unavailable: ${err.message}`;
+    $("obInfo").textContent = `Onboarding settings unavailable: ${err.message}`;
   }
 }
 
 async function refreshOnboardingControls() {
-  $("obPanelInfo").textContent = "Loading New Member Rules selectors...";
-  await Promise.allSettled([loadChannels("ob"), loadOnboardingRoles()]);
+  $("obInfo").textContent = "Loading New Member Rules selectors...";
+  await loadChannels("ob");
+  await loadOnboardingRoles();
   await loadOnboarding();
 }
 
-async function ensureOnboardingRolesForGuild(guildId) {
-  if (!guildId) return;
-  if (!state.roles[guildId]) {
-    state.roles[guildId] = await api(`/api/discord/guilds/${guildId}/roles`);
-    state.roles[guildId].sort((a, b) => (b.position || 0) - (a.position || 0));
-  }
-}
-
 const onboardingLanguageIds = {
-  en: { enabled: "obLangEnabledEn", label: "obLangLabelEn", rules: "obLangRulesEn" },
-  zh: { enabled: "obLangEnabledZh", label: "obLangLabelZh", rules: "obLangRulesZh" },
-  ms: { enabled: "obLangEnabledMs", label: "obLangLabelMs", rules: "obLangRulesMs" },
+  zh: { enabled: "obLangEnabledZh", role: "obLangRoleZh", rules: "obLangRulesZh", label: "中文" },
+  en: { enabled: "obLangEnabledEn", role: "obLangRoleEn", rules: "obLangRulesEn", label: "English" },
+  ja: { enabled: "obLangEnabledJa", role: "obLangRoleJa", rules: "obLangRulesJa", label: "日本語" },
 };
 
 function applyOnboardingForm(config) {
   state.onboarding = config;
   $("obEnabled").checked = !!config.enabled;
+  $("obFanRole").value = config.fan_role_id || config.member_role_id || "";
+  $("obPanelTitle").value = config.panel_title || "Choose your rules language";
+  $("obPanelDescription").value = config.panel_description || "";
+  $("obPanelPlaceholder").value = config.panel_placeholder || "Select language";
+  $("obPanelColor").value = config.panel_color || "Blurple";
+  $("obRulesTitle").value = config.rules_title || "{label} Rules";
+  $("obRulesColor").value = config.rules_color || "Blurple";
+  $("obRulesFooter").value = config.rules_footer || "";
+  $("obAgreeLabel").value = config.agree_label || "Agree";
   if ([...$("obChannel").options].some((option) => option.value === config.channel_id)) {
     $("obChannel").value = config.channel_id;
   }
-  if ([...$("obRole").options].some((option) => option.value === config.member_role_id)) {
-    $("obRole").value = config.member_role_id;
-  }
+  // Each enabled language becomes an option in the public selector panel.
   Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
     const item = config.languages?.[code] || {};
     $(ids.enabled).checked = !!item.enabled;
-    $(ids.label).value = item.label || "";
+    $(ids.role).value = item.language_role_id || "";
     $(ids.rules).value = item.rules || "";
   });
-  $("obPanelInfo").textContent = config.panel_message_id
+  $("obInfo").textContent = config.panel_message_id
     ? `Language panel message: ${config.panel_message_id}`
-    : "No language panel published yet.";
+    : "Publish a single-language selector. Existing language-role members only see the rules.";
 }
 
 function collectOnboardingForm() {
   const languages = {};
   Object.entries(onboardingLanguageIds).forEach(([code, ids]) => {
     languages[code] = {
+      label: ids.label,
       enabled: $(ids.enabled).checked,
-      label: $(ids.label).value,
+      language_role_id: $(ids.role).value,
       rules: $(ids.rules).value,
     };
   });
   return {
     enabled: $("obEnabled").checked,
     channel_id: $("obChannel").value,
-    member_role_id: $("obRole").value,
+    fan_role_id: $("obFanRole").value,
+    member_role_id: $("obFanRole").value,
     panel_message_id: state.onboarding?.panel_message_id || "",
+    panel_title: $("obPanelTitle").value,
+    panel_description: $("obPanelDescription").value,
+    panel_placeholder: $("obPanelPlaceholder").value,
+    panel_color: $("obPanelColor").value,
+    rules_title: $("obRulesTitle").value,
+    rules_color: $("obRulesColor").value,
+    rules_footer: $("obRulesFooter").value,
+    agree_label: $("obAgreeLabel").value,
     languages,
   };
 }
@@ -421,6 +717,7 @@ async function loadOnboarding() {
 
 async function saveOnboarding() {
   const guildId = $("obGuild").value;
+  requireValue(guildId, "Choose a server first.");
   const config = await api(`/api/onboarding/${guildId}`, {
     method: "PUT",
     body: JSON.stringify(collectOnboardingForm()),
@@ -431,6 +728,8 @@ async function saveOnboarding() {
 }
 
 async function publishOnboarding() {
+  validateOnboardingPublish();
+  requireDiscordWriteReady();
   await saveOnboarding();
   const guildId = $("obGuild").value;
   const result = await api(`/api/onboarding/${guildId}/publish`, { method: "POST" });
@@ -439,10 +738,546 @@ async function publishOnboarding() {
   await loadAuditLogs();
 }
 
+async function applyServerRulesDefaults() {
+  const guildId = $("obGuild").value;
+  if (!guildId) return toast("Choose a server first.");
+  const config = await api(`/api/onboarding/${guildId}/server-rules-defaults`, { method: "POST" });
+  applyOnboardingForm(config);
+  toast("Server rules loaded into New Member Rules.");
+  await loadAuditLogs();
+}
+
+function applyWelcomeForm(config) {
+  state.welcome = config;
+  $("welcomeEnabled").checked = !!config.enabled;
+  $("welcomeContent").value = config.welcome_content || "";
+  $("followUpEnabled").checked = !!config.follow_up_enabled;
+  $("followUpContent").value = config.follow_up_content || "";
+  $("followUpDelayValue").value = config.delay_value || 1;
+  $("followUpDelayUnit").value = config.delay_unit || "hours";
+  if ([...$("welcomeChannel").options].some((option) => option.value === config.channel_id)) {
+    $("welcomeChannel").value = config.channel_id;
+  }
+  if ([...$("welcomeRolesChannel").options].some((option) => option.value === config.roles_channel_id)) {
+    $("welcomeRolesChannel").value = config.roles_channel_id;
+  }
+  $("welcomeInfo").textContent = "Completed New Member Rules members will not receive the follow-up.";
+  renderWelcomePreviews();
+}
+
+function collectWelcomeForm() {
+  return {
+    enabled: $("welcomeEnabled").checked,
+    channel_id: $("welcomeChannel").value,
+    roles_channel_id: $("welcomeRolesChannel").value,
+    welcome_content: $("welcomeContent").value,
+    follow_up_enabled: $("followUpEnabled").checked,
+    follow_up_content: $("followUpContent").value,
+    delay_value: Number($("followUpDelayValue").value || 0),
+    delay_unit: $("followUpDelayUnit").value,
+  };
+}
+
+function welcomePreviewText(value) {
+  const guild = state.guilds.find((item) => String(item.id) === String($("welcomeGuild").value));
+  return String(value || "")
+    .replaceAll("{member}", "@New Member")
+    .replaceAll("{server}", guild?.name || "Your Server")
+    .replaceAll("{rules_channel}", "#rules-channel")
+    .replaceAll("{roles_channel}", "#roles-channel");
+}
+
+function renderWelcomePreviews() {
+  const welcome = welcomePreviewText($("welcomeContent").value);
+  const followUp = welcomePreviewText($("followUpContent").value);
+  $("welcomePreview").innerHTML = welcome
+    ? `<div class="plain-preview">${renderDiscordText(welcome)}</div>`
+    : '<div class="plain-preview muted">Welcome message preview</div>';
+  $("followUpPreview").innerHTML = followUp
+    ? `<div class="plain-preview">${renderDiscordText(followUp)}</div>`
+    : '<div class="plain-preview muted">Follow-up message preview</div>';
+}
+
+function insertWelcomeToken(button) {
+  const field = $(button.dataset.target);
+  const token = button.dataset.token;
+  const start = field.selectionStart ?? field.value.length;
+  const end = field.selectionEnd ?? start;
+  field.value = `${field.value.slice(0, start)}${token}${field.value.slice(end)}`;
+  field.focus();
+  field.setSelectionRange(start + token.length, start + token.length);
+  renderWelcomePreviews();
+}
+
+async function refreshWelcomeControls() {
+  const guildId = $("welcomeGuild").value;
+  if (!guildId) return;
+  $("welcomeInfo").textContent = "Loading Welcome Automation...";
+  await Promise.all([
+    fillChannelSelect("welcomeChannel", guildId, "Choose welcome channel"),
+    fillChannelSelect("welcomeRolesChannel", guildId, "Choose role channel"),
+  ]);
+  const config = await api(`/api/welcome-automation/${guildId}`);
+  applyWelcomeForm(config);
+}
+
+async function saveWelcomeAutomation() {
+  const guildId = $("welcomeGuild").value;
+  if (!guildId) return toast("Choose a server first.");
+  const config = await api(`/api/welcome-automation/${guildId}`, {
+    method: "PUT",
+    body: JSON.stringify(validateWelcomeForm()),
+  });
+  applyWelcomeForm(config);
+  const cancelled = Number(config.cancelled_jobs || 0);
+  toast(cancelled ? `Welcome Automation saved. ${cancelled} pending follow-up(s) cancelled.` : "Welcome Automation saved.");
+  await loadAuditLogs();
+}
+
+async function loadModerationRolesAndChannels(force = false) {
+  const guildId = $("modGuild").value;
+  if (!guildId) return;
+  setModerationStatus("Loading moderation selectors...");
+  setTicketStatus("Loading ticket selectors...");
+  try {
+    await fillChannelSelect("modLogChannel", guildId, "No log channel", force);
+    await fillChannelSelect("ticketChannel", guildId, "Choose ticket channel");
+    await fillChannelSelect("ticketLogChannel", guildId, "Use moderation log / choose channel");
+    await fillRoleSelect("modProbationRole", guildId, "Choose role", force);
+    await fillRoleSelect("modRemoveRole", guildId, "Choose role");
+    await fillRoleSelect("ruleRemoveRole", guildId, "Choose role");
+  } catch (err) {
+    throw err;
+  }
+}
+
+async function refreshModerationControls(force = false) {
+  await ensureGuildsLoaded(false);
+  await loadModerationRolesAndChannels(force);
+  await Promise.all([loadModeration(), loadTickets()]);
+}
+
+async function loadModeration() {
+  const guildId = $("modGuild").value;
+  if (!guildId) return;
+  setModerationStatus("Loading moderation cases...");
+  const view = state.moderation.view || "active";
+  const data = await api(`/api/moderation/${guildId}?limit=80&view=${view}`);
+  state.moderation = { ...state.moderation, ...data, view };
+  const settings = data.settings || {};
+  if ([...$("modLogChannel").options].some((option) => option.value === settings.log_channel_id)) {
+    $("modLogChannel").value = settings.log_channel_id || "";
+  }
+  if ([...$("modProbationRole").options].some((option) => option.value === settings.probation_role_id)) {
+    $("modProbationRole").value = settings.probation_role_id || "";
+  }
+  renderModerationRules();
+  fillCaseRuleSelect();
+  $("caseActiveCount").textContent = data.counts?.active || 0;
+  $("caseArchiveCount").textContent = data.counts?.archive || 0;
+  $("caseActiveTab").classList.toggle("secondary", view !== "active");
+  $("caseArchiveTab").classList.toggle("secondary", view !== "archive");
+  renderModerationCases(data.cases || []);
+}
+
+function setModerationStatus(message) {
+  const list = $("modCaseList");
+  if (list) list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+}
+
+function setTicketStatus(message) {
+  const list = $("ticketList");
+  if (list) list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+  if ($("ticketInfo")) $("ticketInfo").textContent = message;
+}
+
+function renderModerationCases(rows) {
+  const list = $("modCaseList");
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = '<p class="muted">No moderation cases yet.</p>';
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    const evidence = row.evidence_snapshot || {};
+    const evidenceAttachments = (evidence.attachments || []).map((attachment) => `<a href="${escapeHtml(attachment.url)}" target="_blank" rel="noopener">${escapeHtml(attachment.filename)}</a>`).join(" · ");
+    const evidenceHtml = evidence.jump_url
+      ? `<div class="saved-meta"><a href="${escapeHtml(evidence.jump_url)}" target="_blank" rel="noopener">Open evidence</a> · ${escapeHtml(evidence.content || "(no text)")}${evidenceAttachments ? `<br />Attachments: ${evidenceAttachments}` : ""}</div>`
+      : row.evidence_url ? `<div class="saved-meta"><a href="${escapeHtml(row.evidence_url)}" target="_blank" rel="noopener">Open evidence</a></div>` : "";
+    const archived = state.moderation.view === "archive";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(row.case_id || "CASE")} · ${escapeHtml(row.action || "case")} · ${escapeHtml(row.status || "open")}</strong>
+        <div class="saved-meta">Target ${escapeHtml(row.target_display || row.target_user_id || "")} · Rule ${escapeHtml(row.rule_number || "unspecified")} ${escapeHtml(row.rule_name || "")} · ${escapeHtml(when)}</div>
+        <div class="saved-meta">${escapeHtml(row.reason || "")}</div>
+        ${evidenceHtml}
+      </div>
+      <div class="actions compact">
+        ${archived ? '<button class="secondary" data-status="open">Reopen</button>' : '<button class="secondary" data-status="accepted">Accept</button><button class="secondary" data-status="rejected">Reject</button><button class="secondary" data-status="escalated">Escalate</button><button class="secondary" data-status="resolved">Resolve</button>'}
+      </div>
+    `;
+    item.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => updateModerationCaseStatus(row.case_id, button.dataset.status));
+    });
+    list.appendChild(item);
+  });
+}
+
+function resetRuleForm() {
+  state.moderation.editingRule = -1;
+  $("ruleNumber").value = "";
+  $("ruleName").value = "";
+  $("ruleReason").value = "";
+  $("ruleSeverity").value = "normal";
+  $("ruleAction").value = "warning";
+  $("ruleTimeoutMinutes").value = 0;
+  $("ruleRemoveRole").value = "";
+  $("ruleEnabled").checked = true;
+  $("addRuleBtn").textContent = "Add Rule";
+  $("cancelRuleEditBtn").classList.add("hidden");
+}
+
+function collectRuleForm(existing = {}) {
+  return {
+    rule_id: existing.rule_id || (crypto.randomUUID ? crypto.randomUUID().replaceAll("-", "") : `${Date.now()}${Math.random()}`),
+    number: $("ruleNumber").value.trim(),
+    name: $("ruleName").value.trim(),
+    reason: $("ruleReason").value.trim(),
+    severity: $("ruleSeverity").value,
+    action: $("ruleAction").value,
+    timeout_minutes: Number($("ruleTimeoutMinutes").value || 0),
+    remove_role_id: $("ruleRemoveRole").value,
+    enabled: $("ruleEnabled").checked,
+  };
+}
+
+function addOrUpdateRule() {
+  const index = state.moderation.editingRule;
+  const existing = index >= 0 ? state.moderation.rules[index] : {};
+  const rule = collectRuleForm(existing);
+  if (!rule.number || !rule.name || !rule.reason) return toast("Rule number, name, and reason are required.");
+  if (rule.action === "timeout" && rule.timeout_minutes <= 0) return toast("Timeout rules need timeout minutes.");
+  if (rule.action === "remove_role" && !rule.remove_role_id) return toast("Remove-role rules need a role.");
+  if ((state.moderation.rules || []).some((item, itemIndex) => item.number === rule.number && itemIndex !== index)) {
+    return toast(`Rule number ${rule.number} is already used.`);
+  }
+  if (index >= 0) state.moderation.rules[index] = rule;
+  else state.moderation.rules.push(rule);
+  resetRuleForm();
+  renderModerationRules();
+  fillCaseRuleSelect();
+}
+
+function editRule(index) {
+  const rule = state.moderation.rules[index];
+  if (!rule) return;
+  state.moderation.editingRule = index;
+  $("ruleNumber").value = rule.number || "";
+  $("ruleName").value = rule.name || "";
+  $("ruleReason").value = rule.reason || "";
+  $("ruleSeverity").value = rule.severity || "normal";
+  $("ruleAction").value = rule.action || "warning";
+  $("ruleTimeoutMinutes").value = rule.timeout_minutes || 0;
+  $("ruleRemoveRole").value = rule.remove_role_id || "";
+  $("ruleEnabled").checked = !!rule.enabled;
+  $("addRuleBtn").textContent = "Update Rule";
+  $("cancelRuleEditBtn").classList.remove("hidden");
+}
+
+function moveRule(index, offset) {
+  const target = index + offset;
+  if (target < 0 || target >= state.moderation.rules.length) return;
+  [state.moderation.rules[index], state.moderation.rules[target]] = [state.moderation.rules[target], state.moderation.rules[index]];
+  renderModerationRules();
+  fillCaseRuleSelect();
+}
+
+function renderModerationRules() {
+  const list = $("ruleList");
+  list.innerHTML = "";
+  const rules = state.moderation.rules || [];
+  if (!rules.length) {
+    list.innerHTML = '<p class="muted">No moderation rules configured.</p>';
+    return;
+  }
+  rules.forEach((rule, index) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    item.innerHTML = `
+      <div><strong>${escapeHtml(rule.number)} · ${escapeHtml(rule.name)}</strong><div class="saved-meta">${escapeHtml(rule.severity)} · ${escapeHtml(rule.action)} · ${rule.enabled ? "Enabled" : "Disabled"}</div><div class="saved-meta">${escapeHtml(rule.reason)}</div></div>
+      <div class="actions compact"><button class="secondary" data-action="up">↑</button><button class="secondary" data-action="down">↓</button><button class="secondary" data-action="edit">Edit</button><button class="delete" data-action="delete">Delete</button></div>`;
+    item.querySelector('[data-action="up"]').addEventListener("click", () => moveRule(index, -1));
+    item.querySelector('[data-action="down"]').addEventListener("click", () => moveRule(index, 1));
+    item.querySelector('[data-action="edit"]').addEventListener("click", () => editRule(index));
+    item.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      state.moderation.rules.splice(index, 1);
+      resetRuleForm();
+      renderModerationRules();
+      fillCaseRuleSelect();
+    });
+    list.appendChild(item);
+  });
+}
+
+function fillCaseRuleSelect() {
+  const select = $("modRuleTemplate");
+  const current = select.value || "custom";
+  const rows = [{ rule_id: "custom", number: "", name: "Custom" }, ...(state.moderation.rules || []).filter((item) => item.enabled)];
+  fillSelect(select, rows, (item) => item.rule_id === "custom" ? "Custom" : `${item.number} · ${item.name}`, (item) => item.rule_id);
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function applyCaseRuleTemplate() {
+  const rule = (state.moderation.rules || []).find((item) => item.rule_id === $("modRuleTemplate").value);
+  if (!rule) return;
+  $("modRuleNumber").value = rule.number;
+  $("modViolationType").value = rule.name;
+  $("modSeverity").value = rule.severity;
+  $("modAction").value = rule.action;
+  $("modReason").value = rule.reason;
+  $("modTimeoutMinutes").value = rule.timeout_minutes || 0;
+  $("modRemoveRole").value = rule.remove_role_id || "";
+}
+
+async function saveModerationRules() {
+  const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
+  validateModerationRulesBeforeSave();
+  const result = await api(`/api/moderation/${guildId}/rules`, { method: "PUT", body: JSON.stringify({ rules: state.moderation.rules || [] }) });
+  state.moderation.rules = result.rules || [];
+  resetRuleForm();
+  renderModerationRules();
+  fillCaseRuleSelect();
+  toast("Moderation rules saved.");
+  await loadAuditLogs();
+}
+
+function renderEvidencePreview() {
+  const box = $("modEvidencePreview");
+  const evidence = state.moderation.evidence;
+  if (!evidence) {
+    box.classList.add("muted");
+    box.textContent = "No Discord evidence loaded.";
+    return;
+  }
+  box.classList.remove("muted");
+  const attachments = (evidence.attachments || []).map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.filename)}</a>`).join(" · ");
+  box.innerHTML = `<strong>${escapeHtml(evidence.author_display)} (${escapeHtml(evidence.author_id)})</strong><div class="saved-meta">${escapeHtml(evidence.created_at || "")}</div><div>${renderDiscordText(evidence.content || "(message has no text)", $("modGuild").value)}</div>${attachments ? `<div class="saved-meta">Attachments: ${attachments}</div>` : ""}`;
+}
+
+async function fetchModerationEvidence() {
+  const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
+  const evidenceUrl = $("modEvidenceUrl").value.trim();
+  requireValue(evidenceUrl, "Paste a Discord Message Link first.");
+  if (!/^https:\/\/(?:canary\.|ptb\.)?(?:discord\.com|discordapp\.com)\/channels\/\d+\/\d+\/\d+\/?$/i.test(evidenceUrl)) {
+    throw new Error("Use a complete Discord Message Link from this server.");
+  }
+  const result = await api(`/api/moderation/${guildId}/evidence/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ message_url: evidenceUrl }),
+  });
+  state.moderation.evidence = result.evidence;
+  $("modTargetId").value = result.evidence.author_id || "";
+  $("modTargetDisplay").value = result.evidence.author_display || "";
+  $("modEvidenceUrl").value = result.evidence.jump_url || $("modEvidenceUrl").value;
+  renderEvidencePreview();
+  toast(result.stale ? "Evidence loaded from cache." : "Discord evidence loaded.");
+}
+
+async function saveModerationSettings() {
+  const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
+  await api(`/api/moderation/${guildId}/settings`, {
+    method: "PUT",
+    body: JSON.stringify({
+      probation_role_id: $("modProbationRole").value,
+      log_channel_id: $("modLogChannel").value,
+    }),
+  });
+  toast("Moderation settings saved.");
+  await loadAuditLogs();
+}
+
+async function createModerationCase() {
+  const guildId = $("modGuild").value;
+  const selectedRule = (state.moderation.rules || []).find((item) => item.rule_id === $("modRuleTemplate").value);
+  const targetId = $("modTargetId").value.trim();
+  const reason = $("modReason").value.trim();
+  const action = $("modAction").value;
+  requireValue(guildId, "Choose a server first.");
+  if (!/^\d+$/.test(targetId)) throw new Error("Target User ID must be numeric.");
+  requireValue(reason, "Reason is required.");
+  if (action === "probation" && !$("modProbationRole").value) throw new Error("Choose a probation role.");
+  if (action === "timeout" && Number($("modTimeoutMinutes").value || 0) <= 0) throw new Error("Timeout minutes must be greater than 0.");
+  if (action === "remove_role" && !$("modRemoveRole").value) throw new Error("Choose a role to remove.");
+  if (!["warning", "note"].includes(action)) requireDiscordWriteReady();
+  const result = await api("/api/moderation/cases", {
+    method: "POST",
+    body: JSON.stringify({
+      guild_id: guildId,
+      target_user_id: targetId,
+      target_display: $("modTargetDisplay").value.trim(),
+      rule_id: selectedRule?.rule_id || "",
+      rule_name: selectedRule?.name || $("modViolationType").value.trim(),
+      rule_number: $("modRuleNumber").value.trim(),
+      violation_type: $("modViolationType").value.trim(),
+      severity: $("modSeverity").value,
+      action,
+      reason,
+      evidence_url: $("modEvidenceUrl").value.trim(),
+      evidence_snapshot: state.moderation.evidence || {},
+      notes: $("modNotes").value.trim(),
+      status: "open",
+      probation_role_id: $("modProbationRole").value,
+      remove_role_id: $("modRemoveRole").value,
+      timeout_minutes: Number($("modTimeoutMinutes").value || 0),
+      log_channel_id: $("modLogChannel").value,
+    }),
+  });
+  toast(`Moderation case created: ${result.case_id}`);
+  ["modTargetId", "modTargetDisplay", "modRuleNumber", "modViolationType", "modReason", "modEvidenceUrl", "modNotes"].forEach((id) => {
+    $(id).value = "";
+  });
+  state.moderation.evidence = null;
+  $("modRuleTemplate").value = "custom";
+  renderEvidencePreview();
+  await loadModeration();
+  await loadAuditLogs();
+}
+
+async function updateModerationCaseStatus(caseId, status) {
+  if (!caseId) return;
+  const guildId = $("modGuild").value;
+  const updated = await api(`/api/moderation/${guildId}/cases/${caseId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, notes: `Marked ${status} from dashboard.` }),
+  });
+  toast(`Case ${updated.case_id} marked ${updated.status}.`);
+  await loadModeration();
+  await loadAuditLogs();
+}
+
+function applyTicketSettings(settings = {}) {
+  state.tickets.settings = settings;
+  $("ticketPanelTitle").value = settings.panel_title || "Need help?";
+  $("ticketPanelDescription").value = settings.panel_description || "Open a private ticket for staff review. Your message will be visible to staff only.";
+  $("ticketButtonLabel").value = settings.button_label || "Open Ticket";
+  $("ticketPanelColor").value = settings.panel_color || "Blurple";
+  if ([...$("ticketChannel").options].some((option) => option.value === settings.ticket_channel_id)) {
+    $("ticketChannel").value = settings.ticket_channel_id || "";
+  }
+  if ([...$("ticketLogChannel").options].some((option) => option.value === settings.log_channel_id)) {
+    $("ticketLogChannel").value = settings.log_channel_id || "";
+  }
+  $("ticketInfo").textContent = settings.panel_message_id
+    ? `Ticket panel message: ${settings.panel_message_id}`
+    : "Publish a public ticket entry. Ticket content is only sent to staff log and dashboard.";
+}
+
+function collectTicketSettings() {
+  return {
+    ticket_channel_id: $("ticketChannel").value,
+    log_channel_id: $("ticketLogChannel").value || $("modLogChannel").value,
+    panel_message_id: state.tickets.settings?.panel_message_id || "",
+    panel_title: $("ticketPanelTitle").value,
+    panel_description: $("ticketPanelDescription").value,
+    button_label: $("ticketButtonLabel").value,
+    panel_color: $("ticketPanelColor").value,
+  };
+}
+
+async function loadTickets() {
+  const guildId = $("modGuild").value;
+  if (!guildId) return;
+  setTicketStatus("Loading tickets...");
+  const view = state.tickets.view || "active";
+  const data = await api(`/api/tickets/${guildId}?limit=80&view=${view}`);
+  state.tickets = { ...state.tickets, ...data, view };
+  applyTicketSettings(data.settings || {});
+  $("ticketActiveCount").textContent = data.counts?.active || 0;
+  $("ticketArchiveCount").textContent = data.counts?.archive || 0;
+  $("ticketActiveTab").classList.toggle("secondary", view !== "active");
+  $("ticketArchiveTab").classList.toggle("secondary", view !== "archive");
+  renderTickets(data.tickets || []);
+}
+
+function renderTickets(rows) {
+  const list = $("ticketList");
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = '<p class="muted">No tickets yet.</p>';
+    return;
+  }
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "audit-item";
+    const when = row.ts ? new Date(row.ts * 1000).toLocaleString() : "Unknown time";
+    const channel = row.channel_id ? `#${row.channel_id}` : "Unknown channel";
+    const archived = state.tickets.view === "archive";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(row.ticket_id || "TICKET")} · ${escapeHtml(row.status || "open")} · ${escapeHtml(row.subject || "")}</strong>
+        <div class="saved-meta">${escapeHtml(row.user_display || row.user_id || "")} (${escapeHtml(row.user_id || "")}) · ${escapeHtml(channel)} · ${escapeHtml(when)}</div>
+        <div class="saved-meta">${escapeHtml(row.content || "")}</div>
+      </div>
+      <div class="actions compact">
+        ${archived ? '<button class="secondary" data-status="open">Reopen</button>' : '<button class="secondary" data-status="resolved">Resolve</button><button class="secondary" data-status="rejected">Reject</button><button class="secondary" data-status="escalated">Escalate</button>'}
+      </div>
+    `;
+    item.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => updateTicketStatus(row.ticket_id, button.dataset.status));
+    });
+    list.appendChild(item);
+  });
+}
+
+async function saveTicketSettings() {
+  const guildId = $("modGuild").value;
+  requireValue(guildId, "Choose a server first.");
+  const settings = await api(`/api/tickets/${guildId}/settings`, {
+    method: "PUT",
+    body: JSON.stringify(collectTicketSettings()),
+  });
+  applyTicketSettings(settings);
+  toast("Ticket settings saved.");
+  await loadAuditLogs();
+}
+
+async function publishTicketPanel() {
+  const settings = collectTicketSettings();
+  requireValue(settings.ticket_channel_id, "Choose a ticket channel.");
+  requireValue(settings.panel_title, "Ticket panel title is required.");
+  requireValue(settings.panel_description, "Ticket panel description is required.");
+  requireValue(settings.button_label, "Ticket button label is required.");
+  requireDiscordWriteReady();
+  await saveTicketSettings();
+  const guildId = $("modGuild").value;
+  const result = await api(`/api/tickets/${guildId}/publish`, { method: "POST" });
+  applyTicketSettings(result.settings || {});
+  toast(`Ticket panel published: ${result.message_id}`);
+  await loadAuditLogs();
+}
+
+async function updateTicketStatus(ticketId, status) {
+  if (!ticketId) return;
+  const guildId = $("modGuild").value;
+  const updated = await api(`/api/tickets/${guildId}/${ticketId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, notes: `Marked ${status} from dashboard.` }),
+  });
+  toast(`Ticket ${updated.ticket_id} marked ${updated.status}.`);
+  await loadTickets();
+  await loadAuditLogs();
+}
+
 async function loadEmojis() {
   const guildId = $("rrGuild").value;
   if (!guildId) return;
-  const custom = await api(`/api/discord/guilds/${guildId}/emojis`);
+  const custom = unwrapDiscord(await api(`/api/discord/guilds/${guildId}/emojis`));
   const rows = [
     ...commonEmojis.map((emoji) => ({ label: emoji, value: emoji })),
     ...custom.map((emoji) => ({
@@ -508,6 +1343,8 @@ function mentionConfig(scope = "msg") {
         roleResults: "mentionRoleResults",
         memberInput: "mentionMemberSearch",
         memberResults: "mentionMemberResults",
+        channelInput: "mentionChannelSearch",
+        channelResults: "mentionChannelResults",
         textarea: "msgContent",
         render: renderMessagePreview,
       };
@@ -526,11 +1363,17 @@ function memberMentionLabel(userId) {
   return `user ${shortId(userId)}`;
 }
 
+function channelMentionLabel(channelId, guildId = currentMessageGuildId()) {
+  const channel = (state.channels[guildId] || []).find((item) => String(item.id) === String(channelId));
+  return channel ? channel.name : `channel-${shortId(channelId)}`;
+}
+
 function renderDiscordText(value, guildId = currentMessageGuildId()) {
   // Convert saved Discord mention tokens into readable preview chips.
   const html = escapeHtml(value || "Nothing written yet.")
     .replace(/&lt;@&amp;(\d+)&gt;/g, (_, roleId) => `<span class="mention-chip">@${escapeHtml(roleMentionLabel(roleId, guildId))}</span>`)
     .replace(/&lt;@(\d+)&gt;/g, (_, userId) => `<span class="mention-chip">@${escapeHtml(memberMentionLabel(userId))}</span>`)
+    .replace(/&lt;#(\d+)&gt;/g, (_, channelId) => `<span class="mention-chip">#${escapeHtml(channelMentionLabel(channelId, guildId))}</span>`)
     .replace(/^# (.+)$/gm, '<strong class="preview-heading">$1</strong>')
     .replace(/\n/g, "<br />");
   return html;
@@ -558,6 +1401,7 @@ function clearMentionResults(scope = "msg") {
   const config = mentionConfig(scope);
   $(config.roleInput).value = "";
   $(config.memberInput).value = "";
+  if (config.channelInput) $(config.channelInput).value = "";
   state.members[config.guildId] = [];
   closeMentionDropdowns();
 }
@@ -567,6 +1411,7 @@ function openMentionDropdown(kind) {
   state.mentionDropdown = kind;
   $("mentionRoleResults").classList.toggle("open", kind === "msg-role");
   $("mentionMemberResults").classList.toggle("open", kind === "msg-member");
+  $("mentionChannelResults").classList.toggle("open", kind === "msg-channel");
   $("rrMentionRoleResults").classList.toggle("open", kind === "rr-role");
   $("rrMentionMemberResults").classList.toggle("open", kind === "rr-member");
 }
@@ -575,6 +1420,7 @@ function closeMentionDropdowns() {
   state.mentionDropdown = "";
   $("mentionRoleResults").classList.remove("open");
   $("mentionMemberResults").classList.remove("open");
+  $("mentionChannelResults").classList.remove("open");
   $("rrMentionRoleResults").classList.remove("open");
   $("rrMentionMemberResults").classList.remove("open");
 }
@@ -644,20 +1490,26 @@ async function searchMembers(scope = "msg") {
   const config = mentionConfig(scope);
   const guildId = config.guildId;
   const query = $(config.memberInput).value.trim();
-  if (!guildId || !query) {
+  if (!guildId || query.length < 2) {
     state.members[guildId] = [];
-    renderMemberMentionResults(scope, []);
+    renderMemberMentionResults(scope, [], query ? "Type at least 2 characters." : "");
     openMentionDropdown(`${scope}-member`);
     config.render();
     return;
   }
+  if (memberSearchController) memberSearchController.abort();
+  memberSearchController = new AbortController();
   try {
-    const rows = await api(`/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`);
+    const rows = unwrapDiscord(await api(
+      `/api/discord/guilds/${guildId}/members/search?q=${encodeURIComponent(query)}&limit=10`,
+      { signal: memberSearchController.signal },
+    ));
     state.members[guildId] = rows;
     renderMemberMentionResults(scope, rows);
     openMentionDropdown(`${scope}-member`);
     config.render();
   } catch (err) {
+    if (err.name === "AbortError") return;
     state.members[guildId] = [];
     renderMemberMentionResults(scope, [], "Member search unavailable");
     openMentionDropdown(`${scope}-member`);
@@ -797,7 +1649,8 @@ async function loadSaved() {
 }
 
 function actionLabel(row) {
-  const section = row.section === "messages" ? "Message" : "Role panel";
+  const section =
+    row.section === "messages" ? "Message" : row.section === "moderation" ? "Moderation" : row.section === "tickets" ? "Ticket" : row.section === "welcome_automation" ? "Welcome" : "Role panel";
   const action = {
     sent: "sent",
     posted: "posted",
@@ -805,8 +1658,41 @@ function actionLabel(row) {
     updated_record: "record updated",
     deleted: "deleted from Discord",
     deleted_record: "record deleted",
+    created_case: "case created",
+    resolved_case: "case resolved",
+    updated_case: "case status updated",
+    updated_ticket: "status updated",
+    saved_rules: "rules saved",
+    saved_settings: "settings saved",
+    loaded_defaults: "defaults loaded",
   }[row.action] || row.action;
   return `${section} ${action}`;
+}
+
+function renderChannelMentionResults() {
+  const config = mentionConfig("msg");
+  const list = $(config.channelResults);
+  const query = $(config.channelInput).value.trim().toLowerCase();
+  const channels = (state.channels[config.guildId] || [])
+    .filter((item) => !query || String(item.name || "").toLowerCase().includes(query))
+    .slice(0, 15);
+  list.innerHTML = "";
+  if (!channels.length) {
+    list.innerHTML = '<p class="muted compact">No matching channels.</p>';
+    return;
+  }
+  channels.forEach((channel) => {
+    const button = document.createElement("button");
+    button.className = "mention-result";
+    button.type = "button";
+    button.innerHTML = `<span>#${escapeHtml(channel.name)}</span><small>${escapeHtml(shortId(channel.id))}</small>`;
+    button.addEventListener("click", () => {
+      $(config.channelInput).value = "";
+      closeMentionDropdowns();
+      insertMentionToken(`<#${channel.id}>`, "msg");
+    });
+    list.appendChild(button);
+  });
 }
 
 async function loadAuditLogs() {
@@ -965,7 +1851,7 @@ function wireEvents() {
     await checkLogin();
   });
 
-  $("refreshBtn").addEventListener("click", loadInitial);
+  $("refreshBtn").addEventListener("click", () => loadInitial(true));
   $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
   $("msgGuild").addEventListener("change", async () => {
@@ -990,7 +1876,15 @@ function wireEvents() {
   $("mentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
     openMentionDropdown("msg-member");
-    memberSearchTimer = setTimeout(searchMembers, 250);
+    memberSearchTimer = setTimeout(searchMembers, 500);
+  });
+  $("mentionChannelSearch").addEventListener("focus", () => {
+    renderChannelMentionResults();
+    openMentionDropdown("msg-channel");
+  });
+  $("mentionChannelSearch").addEventListener("input", () => {
+    renderChannelMentionResults();
+    openMentionDropdown("msg-channel");
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".mention-tool")) {
@@ -1019,18 +1913,53 @@ function wireEvents() {
   $("rrMentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
     openMentionDropdown("rr-member");
-    memberSearchTimer = setTimeout(() => searchMembers("rr"), 250);
+    memberSearchTimer = setTimeout(() => searchMembers("rr"), 500);
   });
   $("obGuild").addEventListener("change", async () => {
     await runAction("Load onboarding server", refreshOnboardingControls);
   });
+  $("loadServerRulesBtn").addEventListener("click", () => runAction("Load server rules", applyServerRulesDefaults));
   $("saveOnboardingBtn").addEventListener("click", () => runAction("Save onboarding", saveOnboarding));
   $("publishOnboardingBtn").addEventListener("click", () => runAction("Publish onboarding", publishOnboarding));
+  $("welcomeGuild").addEventListener("change", () => runAction("Load welcome server", refreshWelcomeControls));
+  ["welcomeContent", "followUpContent"].forEach((id) => $(id).addEventListener("input", renderWelcomePreviews));
+  document.querySelectorAll(".welcome-token").forEach((button) => {
+    button.addEventListener("click", () => insertWelcomeToken(button));
+  });
+  $("saveWelcomeBtn").addEventListener("click", () => runAction("Save Welcome Automation", saveWelcomeAutomation));
+  $("modGuild").addEventListener("change", async () => {
+    state.moderation.view = "active";
+    state.tickets.view = "active";
+    state.moderation.evidence = null;
+    resetRuleForm();
+    renderEvidencePreview();
+    await runAction("Load moderation server", refreshModerationControls);
+  });
+  $("addRuleBtn").addEventListener("click", addOrUpdateRule);
+  $("cancelRuleEditBtn").addEventListener("click", resetRuleForm);
+  $("saveRulesBtn").addEventListener("click", () => runAction("Save moderation rules", saveModerationRules));
+  $("modRuleTemplate").addEventListener("change", applyCaseRuleTemplate);
+  $("fetchEvidenceBtn").addEventListener("click", () => runAction("Fetch evidence", fetchModerationEvidence));
+  $("caseActiveTab").addEventListener("click", () => runAction("Load active cases", async () => { state.moderation.view = "active"; await loadModeration(); }));
+  $("caseArchiveTab").addEventListener("click", () => runAction("Load case archive", async () => { state.moderation.view = "archive"; await loadModeration(); }));
+  $("ticketActiveTab").addEventListener("click", () => runAction("Load active tickets", async () => { state.tickets.view = "active"; await loadTickets(); }));
+  $("ticketArchiveTab").addEventListener("click", () => runAction("Load ticket archive", async () => { state.tickets.view = "archive"; await loadTickets(); }));
+  $("saveModSettingsBtn").addEventListener("click", () => runAction("Save moderation settings", saveModerationSettings));
+  $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", () => refreshModerationControls(true)));
+  $("createModCaseBtn").addEventListener("click", () => runAction("Create moderation case", createModerationCase));
+  $("saveTicketSettingsBtn").addEventListener("click", () => runAction("Save ticket settings", saveTicketSettings));
+  $("publishTicketPanelBtn").addEventListener("click", () => runAction("Publish ticket panel", publishTicketPanel));
+  $("refreshTicketsBtn").addEventListener("click", () => runAction("Refresh tickets", loadTickets));
 
   $("sendMsgBtn").addEventListener("click", () => runAction("Send message", async () => {
+    requireDiscordWriteReady();
+    requireValue($("msgGuild").value, "Choose a server first.");
+    requireValue($("msgChannel").value, "Choose a channel first.");
+    requireValue($("msgContent").value, "Message cannot be empty.");
     const result = await api("/api/messages", {
       method: "POST",
       body: JSON.stringify({
+        guild_id: $("msgGuild").value,
         channel_id: $("msgChannel").value,
         content: $("msgContent").value,
         use_embed: $("msgEmbed").checked,
@@ -1048,10 +1977,13 @@ function wireEvents() {
 
   $("updateMsgBtn").addEventListener("click", () => runAction("Update message", async () => {
     if (!state.editingMessage) return;
+    requireDiscordWriteReady();
+    requireValue($("msgContent").value, "Message cannot be empty.");
     const { guildId, messageId } = state.editingMessage;
     const result = await api(`/api/messages/${guildId}/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
+        guild_id: guildId,
         channel_id: $("msgChannel").value,
         content: $("msgContent").value,
         use_embed: $("msgEmbed").checked,
@@ -1084,9 +2016,15 @@ function wireEvents() {
   });
 
   $("postRRBtn").addEventListener("click", () => runAction("Post role panel", async () => {
+    requireDiscordWriteReady();
+    requireValue($("rrGuild").value, "Choose a server first.");
+    requireValue($("rrChannel").value, "Choose a channel first.");
+    requireValue($("rrDesc").value, "Panel description is required.");
+    if (!state.mappings.length) throw new Error("Add at least one role mapping.");
     const result = await api("/api/reaction-roles", {
       method: "POST",
       body: JSON.stringify({
+        guild_id: $("rrGuild").value,
         channel_id: $("rrChannel").value,
         panel_name: $("rrPanelName").value,
         title: $("rrTitle").value,
@@ -1106,10 +2044,14 @@ function wireEvents() {
 
   $("updateRRBtn").addEventListener("click", () => runAction("Update role panel", async () => {
     if (!state.editingRolePanel) return;
+    requireDiscordWriteReady();
+    requireValue($("rrDesc").value, "Panel description is required.");
+    if (!state.mappings.length) throw new Error("Add at least one role mapping.");
     const { guildId, messageId } = state.editingRolePanel;
     const result = await api(`/api/reaction-roles/${guildId}/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({
+        guild_id: guildId,
         channel_id: $("rrChannel").value,
         panel_name: $("rrPanelName").value,
         title: $("rrTitle").value,

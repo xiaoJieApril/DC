@@ -411,3 +411,26 @@ sudo certbot --nginx -d dashboard.gra-vt.my
 ## 15. Quick Tunnel 只作臨時測試
 
 不要把 `trycloudflare.com` 當正式 dashboard URL。Quick Tunnel 每次重開可能換網址，而且手動 SSH session 斷掉後 tunnel 也可能停止。
+# Discord 429 / Cloudflare 1015 防護與排查
+
+Dashboard 會快取 Discord 的伺服器、頻道、角色與 emoji 資料。Discord 回傳 429 或 Cloudflare Error 1015 時，後端會停止新的 Discord 請求，讀取頁面改用最近一次成功資料，所有寫入操作則暫時停用。請勿反覆 Refresh 或重啟服務，否則可能延長 IP 封鎖。
+
+可選環境設定（以下也是預設值）：
+
+```dotenv
+DISCORD_CACHE_TTL_SECONDS=300
+DISCORD_CACHE_STALE_SECONDS=86400
+DISCORD_CLOUDFLARE_COOLDOWN_SECONDS=900
+DISCORD_CLOUDFLARE_MAX_COOLDOWN_SECONDS=3600
+```
+
+查看發生時段與服務是否重啟：
+
+```bash
+sudo journalctl -u dc-gra-vt-dashboard --since "30 minutes ago"
+sudo journalctl -u dc-gra-vt-bot --since "30 minutes ago"
+sudo systemctl show dc-gra-vt-dashboard -p NRestarts
+sudo systemctl show dc-gra-vt-bot -p NRestarts
+```
+
+`/api/health` 的 `discord` 欄位會顯示 circuit 狀態、剩餘冷卻秒數、最後成功時間與限流次數。正式部署保持單一 Uvicorn worker；增加 workers 前，必須先把 circuit 狀態改為跨程序共享。
