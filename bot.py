@@ -1,4 +1,6 @@
+import datetime
 import os
+import time
 
 import discord
 from discord.ext import commands
@@ -611,6 +613,71 @@ async def removerole(ctx, member: discord.Member, role: discord.Role):
     await member.remove_roles(role, reason=f"Removed by {ctx.author}")
     await ctx.respond(f"Removed **{role.name}** from {member.mention}.", ephemeral=True)
 
+HISTORY_WINDOW_DAYS = 90  # 3 個月回溯期，超過這個天數的案件不列入累計
+
+STRIKE_ACTIONS = {
+    1: "警告紀錄（Warning）",
+    2: "警告 + 觀察期身分組（Warning + Probation）",
+    3: "禁言一週（1-week timeout）",
+    4: "踢出伺服器（Kick，可申訴）",
+}
+
+
+def strike_suggestion(previous_count):
+    """Return the action to take if a new ordinary violation is confirmed."""
+    occurrence = previous_count + 1
+    if occurrence in STRIKE_ACTIONS:
+        return f"本次若成立為第 {occurrence} 次 → {STRIKE_ACTIONS[occurrence]}"
+    return f"本次若成立為第 {occurrence} 次 → 已超過踢出門檻，建議永久封鎖（Permanent ban）"
+
+
+def case_timestamp(case):
+    """Safely read a legacy or malformed case timestamp without breaking /history."""
+    try:
+        return int(case.get("ts") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+@bot.slash_command(name="history", description="Check a member's violation count within the rolling window")
+@commands.has_permissions(manage_messages=True)
+async def history(ctx, member: discord.Member):
+    cutoff = int(time.time()) - HISTORY_WINDOW_DAYS * 86400
+    cases = load_config().get("moderation_cases", {}).get(str(ctx.guild.id), [])
+    if not isinstance(cases, list):
+        cases = []
+    recent = [
+        item
+        for item in cases
+        if isinstance(item, dict)
+        and str(item.get("target_user_id")) == str(member.id)
+        and case_timestamp(item) >= cutoff
+        and item.get("severity") != "red_line"
+        and item.get("status") != "accepted"
+    ]
+    recent.sort(key=case_timestamp, reverse=True)
+    count = len(recent)
+
+    lines = [
+        f"**{member.mention}** 近 {HISTORY_WINDOW_DAYS} 天內累計 **{count}** 次一般違規"
+        f"（不含紅線案件與申訴成功案件）",
+        f"建議處分：{strike_suggestion(count)}",
+        "",
+    ]
+    if recent:
+        lines.append("__案件紀錄__")
+        for item in recent[:10]:
+            when = datetime.fromtimestamp(case_timestamp(item), tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+            case_id = item.get("case_id") or "未編號"
+            action = item.get("action") or "未記錄處分"
+            status = item.get("status") or "未記錄狀態"
+            lines.append(f"`{case_id}` {when} · {action} · {status}")
+        if len(recent) > 10:
+            lines.append(f"...還有 {len(recent) - 10} 筆未顯示，請用 /case 查單筆")
+    else:
+        lines.append("此區間內沒有違規紀錄。")
+
+    await ctx.respond("\n".join(lines), ephemeral=True)
 
 @reactionrole.command(name="create", description="Create a reaction role message")
 @commands.has_permissions(manage_roles=True)
