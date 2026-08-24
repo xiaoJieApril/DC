@@ -43,6 +43,8 @@ const latestUpdates = [
 ];
 let memberSearchTimer = null;
 let memberSearchController = null;
+let moderationHistoryTimer = null;
+let moderationHistoryController = null;
 let guildsPromise = null;
 let initialLoadPromise = null;
 let guildLoadAttempted = false;
@@ -907,11 +909,16 @@ function renderModerationCases(rows) {
     const evidenceHtml = evidence.jump_url
       ? `<div class="saved-meta"><a href="${escapeHtml(evidence.jump_url)}" target="_blank" rel="noopener">Open evidence</a> · ${escapeHtml(evidence.content || "(no text)")}${evidenceAttachments ? `<br />Attachments: ${evidenceAttachments}` : ""}</div>`
       : row.evidence_url ? `<div class="saved-meta"><a href="${escapeHtml(row.evidence_url)}" target="_blank" rel="noopener">Open evidence</a></div>` : "";
+    const strike = row.strike_summary || {};
+    const strikeHtml = Number.isFinite(Number(strike.count))
+      ? `<div class="saved-meta">90d strikes: ${escapeHtml(String(strike.count))} · Next: #${escapeHtml(String(strike.next_count))} · ${escapeHtml(strike.suggested_action || "")}</div>`
+      : "";
     const archived = state.moderation.view === "archive";
     item.innerHTML = `
       <div>
         <strong>${escapeHtml(row.case_id || "CASE")} · ${escapeHtml(row.action || "case")} · ${escapeHtml(row.status || "open")}</strong>
         <div class="saved-meta">Target ${escapeHtml(row.target_display || row.target_user_id || "")} · Rule ${escapeHtml(row.rule_number || "unspecified")} ${escapeHtml(row.rule_name || "")} · ${escapeHtml(when)}</div>
+        ${strikeHtml}
         <div class="saved-meta">${escapeHtml(row.reason || "")}</div>
         ${evidenceHtml}
       </div>
@@ -1040,6 +1047,7 @@ function applyCaseRuleTemplate() {
   $("modReason").value = rule.reason;
   $("modTimeoutMinutes").value = rule.timeout_minutes || 0;
   $("modRemoveRole").value = rule.remove_role_id || "";
+  scheduleModerationHistoryLoad();
 }
 
 async function saveModerationRules() {
@@ -1068,6 +1076,57 @@ function renderEvidencePreview() {
   box.innerHTML = `<strong>${escapeHtml(evidence.author_display)} (${escapeHtml(evidence.author_id)})</strong><div class="saved-meta">${escapeHtml(evidence.created_at || "")}</div><div>${renderDiscordText(evidence.content || "(message has no text)", $("modGuild").value)}</div>${attachments ? `<div class="saved-meta">Attachments: ${attachments}</div>` : ""}`;
 }
 
+function setModerationHistoryStatus(message, muted = true) {
+  const box = $("modHistoryPreview");
+  if (!box) return;
+  box.classList.toggle("muted", muted);
+  box.textContent = message;
+}
+
+function renderModerationHistoryPreview(summary) {
+  if ($("modSeverity").value === "red_line") {
+    setModerationHistoryStatus("Red line: immediate action. This case does not use the 90-day strike ladder.", false);
+    return;
+  }
+  const count = Number(summary?.count || 0);
+  const nextCount = Number(summary?.next_count || count + 1);
+  const action = summary?.suggested_action || "";
+  setModerationHistoryStatus(`近 90 天一般違規：${count}；本次若成立：第 ${nextCount} 次，建議 ${action}`, false);
+}
+
+async function loadModerationHistory() {
+  const guildId = $("modGuild").value;
+  const targetId = $("modTargetId").value.trim();
+  if (!guildId || !targetId) {
+    setModerationHistoryStatus("Enter a Target User ID to load 90-day history.");
+    return;
+  }
+  if (!/^\d+$/.test(targetId)) {
+    setModerationHistoryStatus("Target User ID must be numeric to load history.");
+    return;
+  }
+  if ($("modSeverity").value === "red_line") {
+    renderModerationHistoryPreview({ count: 0, next_count: 0 });
+    return;
+  }
+  if (moderationHistoryController) moderationHistoryController.abort();
+  moderationHistoryController = new AbortController();
+  setModerationHistoryStatus("Loading history...");
+  try {
+    const summary = await api(`/api/moderation/${guildId}/history/${targetId}`, { signal: moderationHistoryController.signal });
+    state.moderation.history = summary;
+    renderModerationHistoryPreview(summary);
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    setModerationHistoryStatus("Could not load history.");
+  }
+}
+
+function scheduleModerationHistoryLoad() {
+  clearTimeout(moderationHistoryTimer);
+  moderationHistoryTimer = setTimeout(loadModerationHistory, 400);
+}
+
 async function fetchModerationEvidence() {
   const guildId = $("modGuild").value;
   requireValue(guildId, "Choose a server first.");
@@ -1085,6 +1144,7 @@ async function fetchModerationEvidence() {
   $("modTargetDisplay").value = result.evidence.author_display || "";
   $("modEvidenceUrl").value = result.evidence.jump_url || $("modEvidenceUrl").value;
   renderEvidencePreview();
+  await loadModerationHistory();
   toast(result.stale ? "Evidence loaded from cache." : "Discord evidence loaded.");
 }
 
@@ -1145,6 +1205,7 @@ async function createModerationCase() {
   state.moderation.evidence = null;
   $("modRuleTemplate").value = "custom";
   renderEvidencePreview();
+  setModerationHistoryStatus("Enter a Target User ID to load 90-day history.");
   await loadModeration();
   await loadAuditLogs();
 }
@@ -1933,12 +1994,15 @@ function wireEvents() {
     state.moderation.evidence = null;
     resetRuleForm();
     renderEvidencePreview();
+    setModerationHistoryStatus("Enter a Target User ID to load 90-day history.");
     await runAction("Load moderation server", refreshModerationControls);
   });
   $("addRuleBtn").addEventListener("click", addOrUpdateRule);
   $("cancelRuleEditBtn").addEventListener("click", resetRuleForm);
   $("saveRulesBtn").addEventListener("click", () => runAction("Save moderation rules", saveModerationRules));
   $("modRuleTemplate").addEventListener("change", applyCaseRuleTemplate);
+  $("modTargetId").addEventListener("input", scheduleModerationHistoryLoad);
+  $("modSeverity").addEventListener("change", scheduleModerationHistoryLoad);
   $("fetchEvidenceBtn").addEventListener("click", () => runAction("Fetch evidence", fetchModerationEvidence));
   $("caseActiveTab").addEventListener("click", () => runAction("Load active cases", async () => { state.moderation.view = "active"; await loadModeration(); }));
   $("caseArchiveTab").addEventListener("click", () => runAction("Load case archive", async () => { state.moderation.view = "archive"; await loadModeration(); }));

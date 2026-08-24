@@ -31,15 +31,39 @@ class ModerationApiTests(unittest.TestCase):
 
     def test_moderation_and_ticket_views_return_counts(self):
         config = {
-            "moderation_cases": {"1": [{"status": "open"}, {"status": "resolved"}]},
+            "moderation_cases": {"1": [
+                {"status": "open", "target_user_id": "9", "severity": "normal", "ts": 100},
+                {"status": "resolved", "target_user_id": "9", "severity": "normal", "ts": 90},
+            ]},
             "tickets": {"1": [{"status": "escalated"}, {"status": "rejected"}]},
         }
-        with patch.object(dashboard_api, "load_config", return_value=config):
+        with patch.object(dashboard_api, "load_config", return_value=config), patch.object(dashboard_api.time, "time", return_value=120):
             cases = dashboard_api.get_moderation("1", 50, "active")
             tickets = dashboard_api.get_tickets("1", 50, "archive")
         self.assertEqual(len(cases["cases"]), 1)
         self.assertEqual(cases["counts"], {"active": 1, "archive": 1})
+        self.assertEqual(cases["cases"][0]["strike_summary"]["count"], 2)
         self.assertEqual(tickets["tickets"][0]["status"], "rejected")
+
+    def test_moderation_history_returns_recent_cases_and_recommendation(self):
+        config = {
+            "moderation_cases": {"1": [
+                {"case_id": "CASE-1", "status": "open", "target_user_id": "9", "severity": "normal", "ts": 100},
+                {"case_id": "CASE-2", "status": "resolved", "target_user_id": "9", "severity": "normal", "ts": 90},
+                {"case_id": "CASE-3", "status": "open", "target_user_id": "9", "severity": "red_line", "ts": 80},
+            ]},
+        }
+        with patch.object(dashboard_api, "load_config", return_value=config), patch.object(dashboard_api.time, "time", return_value=120):
+            result = dashboard_api.get_moderation_history("1", "9")
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["next_count"], 3)
+        self.assertEqual(result["recent_cases"][0]["case_id"], "CASE-1")
+        self.assertIn("禁言一週", result["suggested_action"])
+
+    def test_moderation_history_rejects_invalid_target(self):
+        with self.assertRaises(HTTPException) as raised:
+            dashboard_api.get_moderation_history("1", "not-a-user")
+        self.assertEqual(raised.exception.status_code, 400)
 
     def test_case_rejects_evidence_for_another_target(self):
         payload = dashboard_api.ModerationCasePayload(
