@@ -45,6 +45,7 @@ from storage import (
 from moderation_tools import (
     evidence_snapshot_from_api,
     filter_status_view,
+    moderation_strike_summary,
     normalize_moderation_rules,
     parse_discord_message_url,
     status_counts,
@@ -1435,13 +1436,31 @@ def get_moderation(
 ):
     config = load_config()
     all_cases = config.get("moderation_cases", {}).get(str(guild_id), [])
+    now = int(time.time())
+    cases = []
+    for item in filter_status_view(all_cases, view, "case")[:limit]:
+        case = dict(item)
+        target_user_id = case.get("target_user_id")
+        case["strike_summary"] = moderation_strike_summary(all_cases, target_user_id, now=now) if target_user_id else {}
+        cases.append(case)
     return {
         "settings": normalize_moderation_settings(config.get("moderation_settings", {}).get(str(guild_id), {})),
         "rules": normalize_moderation_rules(config.get("moderation_rules", {}).get(str(guild_id), [])),
-        "cases": filter_status_view(all_cases, view, "case")[:limit],
+        "cases": cases,
         "counts": status_counts(all_cases, "case"),
         "view": view,
     }
+
+
+@app.get("/api/moderation/{guild_id}/history/{target_user_id}", dependencies=[Depends(require_admin)])
+def get_moderation_history(guild_id: str, target_user_id: str):
+    if not str(guild_id).isdigit():
+        raise HTTPException(status_code=400, detail="Choose a server")
+    if not str(target_user_id).isdigit():
+        raise HTTPException(status_code=400, detail="Target user ID must be numeric")
+    config = load_config()
+    all_cases = config.get("moderation_cases", {}).get(str(guild_id), [])
+    return moderation_strike_summary(all_cases, target_user_id)
 
 
 @app.put("/api/moderation/{guild_id}/settings", dependencies=[Depends(require_admin)])

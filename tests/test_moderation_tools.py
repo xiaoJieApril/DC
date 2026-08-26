@@ -10,8 +10,10 @@ import storage
 from moderation_tools import (
     evidence_snapshot_from_api,
     filter_status_view,
+    moderation_strike_summary,
     normalize_moderation_rules,
     parse_discord_message_url,
+    strike_action_for,
     status_counts,
     status_update,
     validate_moderation_rules,
@@ -72,6 +74,27 @@ class ModerationToolsTests(unittest.TestCase):
         self.assertEqual(update["status"], "open")
         self.assertEqual(update["status_history"][0]["from"], "resolved")
         self.assertEqual(update["resolved_ts"], 0)
+
+    def test_strike_summary_counts_recent_general_cases_only(self):
+        now = 1_000_000
+        cases = [
+            {"case_id": "CASE-1", "target_user_id": "9", "severity": "normal", "status": "open", "ts": now - 10},
+            {"case_id": "CASE-2", "target_user_id": "9", "severity": "serious", "status": "resolved", "ts": now - 20},
+            {"case_id": "CASE-3", "target_user_id": "9", "severity": "red_line", "status": "open", "ts": now - 30},
+            {"case_id": "CASE-4", "target_user_id": "9", "severity": "normal", "status": "accepted", "ts": now - 40},
+            {"case_id": "CASE-5", "target_user_id": "9", "severity": "normal", "status": "open", "ts": now - (91 * 24 * 60 * 60)},
+            {"case_id": "CASE-6", "target_user_id": "8", "severity": "normal", "status": "open", "ts": now - 50},
+        ]
+        summary = moderation_strike_summary(cases, "9", now=now)
+        self.assertEqual(summary["count"], 2)
+        self.assertEqual(summary["next_count"], 3)
+        self.assertIn("禁言一週", summary["suggested_action"])
+        self.assertEqual([item["case_id"] for item in summary["recent_cases"]], ["CASE-1", "CASE-2"])
+
+    def test_strike_actions_cover_first_through_fifth(self):
+        expected = ["警告紀錄", "觀察期", "禁言一週", "踢出伺服器", "永久封鎖"]
+        for index, text in enumerate(expected, start=1):
+            self.assertIn(text, strike_action_for(index))
 
     def test_draft_claim_is_persistent_and_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

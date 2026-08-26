@@ -9,6 +9,13 @@ TICKET_ACTIVE_STATUSES = {"open", "escalated"}
 TICKET_ARCHIVE_STATUSES = {"resolved", "rejected"}
 VALID_SEVERITIES = {"normal", "serious", "red_line"}
 VALID_ACTIONS = {"warning", "probation", "timeout", "remove_role", "note"}
+HISTORY_WINDOW_DAYS = 90
+STRIKE_ACTIONS = {
+    1: "警告紀錄 / Warning record",
+    2: "警告 + 觀察期身分組 / Warning + probation role",
+    3: "禁言一週 + 觀察期延長 / One-week timeout + probation extension",
+    4: "踢出伺服器，可申訴 / Kick, appeal allowed",
+}
 MESSAGE_LINK_RE = re.compile(
     r"^https?://(?:canary\.|ptb\.)?(?:discord(?:app)?\.com)/channels/(\d+)/(\d+)/(\d+)(?:[/?#].*)?$",
     re.IGNORECASE,
@@ -141,6 +148,66 @@ def status_counts(rows, kind="case"):
     for item in rows:
         counts[status_group(item.get("status"), kind)] += 1
     return counts
+
+
+def strike_action_for(next_count):
+    try:
+        value = int(next_count)
+    except (TypeError, ValueError):
+        value = 1
+    if value <= 0:
+        value = 1
+    return STRIKE_ACTIONS.get(value, "永久封鎖或管理員手動審核 / Permanent ban or staff review")
+
+
+def moderation_case_timestamp(item):
+    try:
+        return int(float(item.get("ts") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def moderation_strike_summary(cases, target_user_id, now=None, window_days=HISTORY_WINDOW_DAYS, limit=5):
+    timestamp = int(now if now is not None else time.time())
+    cutoff = timestamp - (int(window_days) * 24 * 60 * 60)
+    target = str(target_user_id or "")
+    matching = []
+    for item in cases or []:
+        if not isinstance(item, dict):
+            continue
+        case_ts = moderation_case_timestamp(item)
+        if str(item.get("target_user_id") or "") != target:
+            continue
+        if case_ts < cutoff:
+            continue
+        if str(item.get("severity") or "normal") == "red_line":
+            continue
+        if str(item.get("status") or "open") == "accepted":
+            continue
+        matching.append(item)
+    matching.sort(key=moderation_case_timestamp, reverse=True)
+    count = len(matching)
+    next_count = count + 1
+    recent_cases = [
+        {
+            "case_id": item.get("case_id", ""),
+            "action": item.get("action", ""),
+            "status": item.get("status", "open"),
+            "rule_number": item.get("rule_number", ""),
+            "rule_name": item.get("rule_name", ""),
+            "severity": item.get("severity", "normal"),
+            "reason": item.get("reason", ""),
+            "ts": moderation_case_timestamp(item),
+        }
+        for item in matching[:limit]
+    ]
+    return {
+        "count": count,
+        "window_days": int(window_days),
+        "next_count": next_count,
+        "suggested_action": strike_action_for(next_count),
+        "recent_cases": recent_cases,
+    }
 
 
 def status_update(item, new_status, actor, notes="", now=None, kind="case"):
