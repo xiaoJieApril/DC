@@ -16,6 +16,10 @@ DEFAULT_CONFIG = {
     "reaction_roles": {},
     "messages": {},
     "onboarding": {},
+    # Per-guild moderation records.  Keep this separate from audit_logs: the
+    # latter is a short operational log, while cases are the source of truth
+    # for rolling violation counts.
+    "moderation_cases": {},
     "welcome_automation": {},
     "welcome_jobs": [],
     "moderation_cases": {},
@@ -47,6 +51,7 @@ def normalize_config(data):
         "reaction_roles": data.get("reaction_roles", {}) if isinstance(data.get("reaction_roles", {}), dict) else {},
         "messages": data.get("messages", {}) if isinstance(data.get("messages", {}), dict) else {},
         "onboarding": data.get("onboarding", {}) if isinstance(data.get("onboarding", {}), dict) else {},
+        "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
         "welcome_automation": data.get("welcome_automation", {}) if isinstance(data.get("welcome_automation", {}), dict) else {},
         "welcome_jobs": data.get("welcome_jobs", []) if isinstance(data.get("welcome_jobs", []), list) else [],
         "moderation_cases": data.get("moderation_cases", {}) if isinstance(data.get("moderation_cases", {}), dict) else {},
