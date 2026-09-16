@@ -1,6 +1,3 @@
-import datetime
-import os
-import time
 import asyncio
 import os
 import secrets
@@ -240,6 +237,9 @@ async def fetch_member(guild, user_id):
             return await guild.fetch_member(user_id)
         except discord.NotFound:
             MEMBER_NEGATIVE_CACHE[key] = time.time() + 30
+            return None
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[MEMBER] fetch failed for {user_id} in {guild.id}: {exc}")
             return None
 
     task = asyncio.create_task(run())
@@ -784,11 +784,34 @@ def configured_language_role_ids(entry):
     return role_ids
 
 
-def member_has_any_onboarding_language_role(member, entry):
-    configured = configured_language_role_ids(entry)
+def configured_onboarding_completion_role_ids(entry):
+    role_ids = set(configured_language_role_ids(entry))
+    for key in ("fan_role_id", "member_role_id"):
+        role_id = str(entry.get(key) or "")
+        if role_id.isdigit():
+            role_ids.add(int(role_id))
+    return role_ids
+
+
+def member_onboarding_read_only(member, entry):
+    """True when member already has Traveler/common fan role or any language fan role."""
+    configured = configured_onboarding_completion_role_ids(entry)
     if not configured:
         return False
     return any(getattr(role, "id", None) in configured for role in getattr(member, "roles", []))
+
+
+def interaction_select_values(interaction):
+    data = getattr(interaction, "data", None) or {}
+    if isinstance(data, dict):
+        raw_values = data.get("values")
+        if raw_values:
+            return [str(value) for value in raw_values]
+    for attr in ("values", "selected_values"):
+        raw_values = getattr(interaction, attr, None)
+        if raw_values:
+            return [str(value) for value in raw_values]
+    return []
 
 
 def onboarding_role_id(entry, language):
@@ -837,13 +860,10 @@ async def send_onboarding_rules(interaction, entry, language):
     footer = str(entry.get("rules_footer") or "").strip()
     if footer:
         embed.set_footer(text=footer[:2048])
-    # Existing language-role members can re-read any language without Agree.
-    # Brand-new members (no language fan role yet) get Agree for their first pick.
-    has_any_language_role = member_has_any_onboarding_language_role(member, entry)
-    has_target_language_role = role in member.roles
-    show_agree = not has_target_language_role and not has_any_language_role
+    # Traveler/common fan role or any language fan role => rules only, no Agree.
+    read_only = member_onboarding_read_only(member, entry)
     view = None
-    if show_agree:
+    if not read_only:
         view = OnboardingAgreeView(interaction.guild.id, language, entry.get("agree_label") or "Agree")
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -1123,7 +1143,7 @@ async def on_interaction(interaction: discord.Interaction):
             if not entry:
                 await interaction.followup.send("Onboarding is not configured right now.", ephemeral=True)
                 return
-            values = [str(value) for value in data.get("values", [])]
+            values = interaction_select_values(interaction)
             language = selected_onboarding_language(values)
             if not language:
                 await interaction.followup.send("Choose exactly one language.", ephemeral=True)

@@ -79,6 +79,21 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(view, bot.OnboardingAgreeView)
         self.assertEqual(len(view.children), 1)
 
+    async def test_traveler_common_role_can_read_other_language_without_agree(self):
+        traveler_role = SimpleNamespace(id=99, name="Traveler")
+        english_role = SimpleNamespace(id=20, name="English Fans")
+        member = SimpleNamespace(id=5, roles=[traveler_role])
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            user=SimpleNamespace(id=5),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        with patch.object(bot, "onboarding_member_and_role", AsyncMock(return_value=(member, english_role, ""))):
+            await bot.send_onboarding_rules(interaction, self.entry(), "en")
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIsNone(kwargs["view"])
+        self.assertEqual(kwargs["embed"].description, "English rules")
+
     async def test_existing_language_role_member_can_read_other_language_rules(self):
         chinese_role = SimpleNamespace(id=10, name="Chinese Fans")
         english_role = SimpleNamespace(id=20, name="English Fans")
