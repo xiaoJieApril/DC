@@ -679,7 +679,7 @@ function applyOnboardingForm(config) {
   });
   $("obInfo").textContent = config.panel_message_id
     ? `Language panel message: ${config.panel_message_id}`
-    : "Publish a single-language selector. Existing language-role members only see the rules.";
+    : "Publish the language selector. Members with any language fan role can read all languages without Agree.";
 }
 
 function collectOnboardingForm() {

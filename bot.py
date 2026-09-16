@@ -770,6 +770,24 @@ def selected_onboarding_language(values):
     return clean_values[0] if len(clean_values) == 1 else ""
 
 
+def configured_language_role_ids(entry):
+    role_ids = set()
+    for item in (entry.get("languages") or {}).values():
+        if not isinstance(item, dict) or not item.get("enabled"):
+            continue
+        role_id = str(item.get("language_role_id") or "")
+        if role_id.isdigit():
+            role_ids.add(int(role_id))
+    return role_ids
+
+
+def member_has_any_onboarding_language_role(member, entry):
+    configured = configured_language_role_ids(entry)
+    if not configured:
+        return False
+    return any(getattr(role, "id", None) in configured for role in getattr(member, "roles", []))
+
+
 def onboarding_role_id(entry, language):
     item = onboarding_language(entry, language)
     if not item:
@@ -816,10 +834,13 @@ async def send_onboarding_rules(interaction, entry, language):
     footer = str(entry.get("rules_footer") or "").strip()
     if footer:
         embed.set_footer(text=footer[:2048])
-    # Existing fan-role members can re-read the rules without receiving an
-    # action they no longer need. New members get exactly one Agree button.
+    # Existing language-role members can re-read any language without Agree.
+    # Brand-new members (no language fan role yet) get Agree for their first pick.
+    has_any_language_role = member_has_any_onboarding_language_role(member, entry)
+    has_target_language_role = role in member.roles
+    show_agree = not has_target_language_role and not has_any_language_role
     view = None
-    if role not in member.roles:
+    if show_agree:
         view = OnboardingAgreeView(interaction.guild.id, language, entry.get("agree_label") or "Agree")
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
