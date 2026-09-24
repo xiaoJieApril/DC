@@ -880,7 +880,10 @@ async def send_onboarding_rules(interaction, entry, language):
     view = None
     if not read_only:
         view = OnboardingAgreeView(interaction.guild.id, language, entry.get("agree_label") or "Agree")
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    if view is None:
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 async def apply_onboarding_agreement(interaction, entry, language, guild=None):
