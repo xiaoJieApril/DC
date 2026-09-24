@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import secrets
 import time
@@ -40,6 +41,20 @@ load_dotenv()
 init_db()
 
 BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+BOT_LOG_PATH = LOG_DIR / "dashboard_bot.log"
+logger = logging.getLogger("bot")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    file_handler = logging.FileHandler(BOT_LOG_PATH, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
 RATE_COORDINATOR = SharedRateCoordinator(BASE_DIR / "data" / "request_limits.sqlite3")
 BOT_ACTION_INFLIGHT = set()
 BOT_ACTION_LOCK = asyncio.Lock()
@@ -699,7 +714,7 @@ class RoleSelect(discord.ui.Select):
             result = await apply_role_selection(interaction, entry, self.values)
             await interaction.followup.send(result, ephemeral=True)
         except Exception as exc:
-            print(f"[RR] Persistent select failed: {exc}")
+            logger.exception("[RR] Persistent select failed")
             if interaction.response.is_done():
                 await interaction.followup.send(f"Role update failed: {exc}", ephemeral=True)
             else:
@@ -1037,7 +1052,7 @@ async def welcome_follow_up_worker():
         try:
             await process_welcome_follow_up(job)
         except Exception as exc:
-            print(f"[WELCOME] Unexpected follow-up failure: {exc}")
+            logger.exception("[WELCOME] Unexpected follow-up failure")
             await retry_or_finish_welcome_job(job, exc)
 
 
@@ -1184,14 +1199,14 @@ async def on_interaction(interaction: discord.Interaction):
         result = await apply_role_selection(interaction, entry, values)
         await interaction.followup.send(result, ephemeral=True)
     except Exception as exc:
-        print(f"[INTERACTION] Component interaction failed: {exc}")
+        logger.exception("[INTERACTION] Component interaction failed")
         try:
             if interaction.response.is_done():
                 await interaction.followup.send("This action could not be completed right now. Please try again later.", ephemeral=True)
             else:
                 await interaction.response.send_message("This action could not be completed right now. Please try again later.", ephemeral=True)
         except Exception as nested_exc:
-            print(f"[INTERACTION] Could not report interaction failure: {nested_exc}")
+            logger.exception("[INTERACTION] Could not report interaction failure")
     finally:
         await finish_bot_action(action_key)
 
