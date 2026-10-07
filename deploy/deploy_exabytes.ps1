@@ -39,7 +39,13 @@ if (Test-Path $archive) {
 
 $items = @(
     "bot.py",
+    "bot_app",
+    "moderation_tools.py",
+    "welcome_automation.py",
+    "request_limits.py",
+    "discord_guard.py",
     "dashboard_api.py",
+    "dashboard_features",
     "storage.py",
     "requirements.txt",
     "requirements-phone.txt",
@@ -70,3 +76,4 @@ Write-Host "  # For 24/7 production set BOT_CONTROL_MODE=systemd in .env"
 Write-Host "  sudo systemctl enable --now dc-gra-vt-dashboard"
 Write-Host "  sudo systemctl enable --now dc-gra-vt-bot"
 Write-Host "  sudo journalctl -u dc-gra-vt-dashboard -f"
+

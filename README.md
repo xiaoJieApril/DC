@@ -6,11 +6,34 @@ DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、messa
 
 ```text
 .
-├─ bot.py                         # Discord bot runtime
-├─ dashboard_api.py               # FastAPI dashboard API + static frontend host
+├─ bot.py                         # Bot entry point
+├─ bot_app/                       # Discord runtime grouped by feature
+│  ├─ core.py                     # Shared bot state, helpers, and UI components
+│  ├─ events.py                   # Lifecycle, welcome, and reaction events
+│  ├─ message_commands.py         # Message and member-role commands
+│  ├─ moderation_commands.py      # Moderation commands and case workflows
+│  └─ role_commands.py            # Reaction-role commands
+├─ dashboard_api.py               # FastAPI setup and shared API services
+├─ dashboard_features/            # Dashboard API routes grouped by feature
+│  ├─ system.py                   # Health, login, and bot control
+│  ├─ discord.py                  # Guild, channel, role, and member lookup
+│  ├─ onboarding.py               # Member rules and language selection
+│  ├─ welcome.py                  # Welcome automation settings
+│  ├─ moderation.py               # Cases, rules, and evidence
+│  ├─ tickets.py                  # Ticket panels and ticket management
+│  ├─ messages.py                 # Send and edit messages
+│  ├─ role_panels.py              # Create and edit role panels
+│  └─ saved_items.py              # Saved data and audit logs
 ├─ storage.py                     # JSON config storage layer
-├─ gui.py                         # 舊 CustomTkinter GUI，本機備用
-├─ frontend/                      # Dashboard HTML/CSS/JS
+├─ frontend/                      # Dashboard UI, split into feature scripts
+│  ├─ app.js                      # Shared state, API helpers, and event wiring
+│  ├─ onboarding.js               # Member rules and language selection
+│  ├─ welcome.js                  # Welcome automation
+│  ├─ moderation.js               # Moderation cases and rules
+│  ├─ tickets.js                  # Ticket panel and ticket management
+│  ├─ message_composer.js         # Message composition and mention helpers
+│  ├─ role_panels.js              # Role panel editor
+│  └─ saved_items.js              # Saved messages, panels, and audit logs
 ├─ deploy/                        # VPS systemd services + deploy helper
 ├─ docs/                          # 中文 hosting/deployment 文件
 ├─ scripts/                       # 本機/手機啟動腳本
@@ -178,3 +201,4 @@ STORAGE_BACKEND=json
 - 正式 VPS 請設定 `BOT_CONTROL_MODE=systemd`，避免 dashboard UI 重複啟動 bot。
 - `trycloudflare.com` Quick Tunnel 只適合臨時測試。沒有 domain 時，正式入口請用 Lightsail Static IP。
 - Discord Developer Portal 需要開啟 Server Members Intent，New Member Rules、Welcome Automation 和 member role 發放才會穩定運作。
+
