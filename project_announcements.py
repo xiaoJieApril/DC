@@ -129,11 +129,16 @@ class _PageParser(HTMLParser):
             # actual project URL lives on an anchor somewhere inside it.
             if tag == "a" and not self._card_href and attrs.get("href"):
                 self._card_href = attrs["href"]
+                self.cards.append((self._card_href, ""))
         elif "project-card" in classes:
             self._card_depth = 1
             # Also support pages where the card itself is the anchor.
             self._card_href = attrs.get("href", "") if tag == "a" else ""
             self._card_parts = []
+            if self._card_href:
+                # Record the target as soon as its opening tag is parsed. The
+                # link must not depend on every nested card tag being balanced.
+                self.cards.append((self._card_href, ""))
 
     def handle_endtag(self, tag):
         if tag == "title":
@@ -143,7 +148,7 @@ class _PageParser(HTMLParser):
         if self._card_depth and tag not in _VOID_TAGS:
             self._card_depth -= 1
             if self._card_depth == 0:
-                self.cards.append((self._card_href, " ".join(self._card_parts)))
+                self._card_href = ""
 
     def handle_data(self, data):
         value = " ".join(str(data).split())
