@@ -23,7 +23,9 @@ DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、messa
 │  ├─ tickets.py                  # Ticket panels and ticket management
 │  ├─ messages.py                 # Send and edit messages
 │  ├─ role_panels.py              # Create and edit role panels
-│  └─ saved_items.py              # Saved data and audit logs
+│  ├─ saved_items.py              # Saved data and audit logs
+│  └─ project_announcements.py    # Gra-VT project intake and Discord publishing
+├─ project_announcements.py       # Same-site scraper and project SQLite store
 ├─ storage.py                     # JSON config storage layer
 ├─ frontend/                      # Dashboard UI, split into feature scripts
 │  ├─ app.js                      # Shared state, API helpers, and event wiring
@@ -33,7 +35,8 @@ DC-Gra-vt-bot 是一個 Discord server 管理 bot，包含 web dashboard、messa
 │  ├─ tickets.js                  # Ticket panel and ticket management
 │  ├─ message_composer.js         # Message composition and mention helpers
 │  ├─ role_panels.js              # Role panel editor
-│  └─ saved_items.js              # Saved messages, panels, and audit logs
+│  ├─ saved_items.js              # Saved messages, panels, and audit logs
+│  └─ project_announcements.js   # Project review, channel setup, and preview
 ├─ deploy/                        # VPS systemd services + deploy helper
 ├─ docs/                          # 中文 hosting/deployment 文件
 ├─ scripts/                       # 本機/手機啟動腳本
@@ -71,6 +74,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 Dashboard 登录使用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和 `SESSION_SECRET`。Bot 与 FastAPI 分开运行，但共享项目目录下的 `data/observability.sqlite3`：bot 每 15 秒写入 Gateway 心跳，指令和交互写入功能结果，错误通过后台日志队列记录；FastAPI 提供受登录保护的摘要、错误筛选和状态更新 API。首次启动时历史时间线与功能统计会显示“暂无记录”，数据从启动后开始积累。公开的 `/api/health` 只返回最小存活状态。
+
+Dashboard 的“项目公告”页由管理员手动抓取 `https://gra-vt.my/projects`，只读取新的项目详情并保存到 `data/projects.sqlite3`。在页面校对 Embed 草稿并为各服务器保存公告频道后，可分别发布到对应服务器；已发布记录按项目和服务器防止重复发送。抓取器只跟随 `gra-vt.my` 站内链接，不需要额外环境变量，也不会定期抓取或自动发布。
 
 安裝 dependencies：
 

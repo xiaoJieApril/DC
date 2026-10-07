@@ -288,7 +288,7 @@ function setView(name) {
     moderation: ["Moderation", "管理违规规则、案件和处理记录。"],
     tickets: ["Tickets", "管理工单入口并处理成员请求。"],
     errors: ["错误报告", "查看异常、原因提示并更新处理状态。"],
-    announcements: ["项目公告", "未来用于校对并发布 Gra-VT 项目公告。"],
+    announcements: ["项目公告", "发现 Gra-VT 新项目，校对内容并发布到 Discord。"],
     saved: ["已保存内容", "查看和管理已保存的消息与面板。"],
     settings: ["设置", "配置此浏览器使用的 API 地址。"],
   };
@@ -303,6 +303,7 @@ function setView(name) {
   else if (name === "moderation") ensureModerationLoaded();
   else if (name === "tickets") ensureTicketsLoaded();
   else if (name === "errors") loadErrors();
+  else if (name === "announcements") ensureProjectAnnouncementsLoaded();
   else if (name === "saved") loadSaved();
 }
 
@@ -705,6 +706,7 @@ function wireEvents() {
   });
 
   $("refreshBtn").addEventListener("click", () => loadInitial(true));
+  wireProjectAnnouncements();
   $("startBotBtn").addEventListener("click", () => runAction("Start bot", startBot));
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
   $("msgGuild").addEventListener("change", async () => {

@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="./styles.css?v=20261008-dashboard-4" />
   </head>
   <body>
-    <aside class="sidebar" id="sidebar"><a class="brand" href="#overview" aria-label="DC Bot 运行概览"><img src="./assets/bot-logo.jpg" alt="" /><span><strong>DC Bot</strong><small>GRA—VT 运行台</small></span></a><p class="nav-caption">运行</p><button class="nav active" data-view="overview">运行概览</button><p class="nav-caption">功能</p><button class="nav" data-view="messages">发送消息</button><button class="nav" data-view="roles">Reaction Roles</button><button class="nav" data-view="onboarding">New Member Rules</button><button class="nav" data-view="welcome">Welcome Automation</button><button class="nav" data-view="moderation">Moderation</button><button class="nav" data-view="tickets">Tickets</button><button class="nav" data-view="saved">已保存内容</button><p class="nav-caption">系统</p><button class="nav nav-error" data-view="errors">错误报告 <span id="errorBadge" class="nav-badge hidden">0</span></button><button class="nav" data-view="announcements">项目公告 <span class="nav-soon">预留</span></button><button class="nav" data-view="settings">设置</button><button id="logoutBtn" class="nav danger">退出登录</button><div class="sidebar-foot"><span class="pulse-dot"></span> 私有管理面板</div></aside>
+    <aside class="sidebar" id="sidebar"><a class="brand" href="#overview" aria-label="DC Bot 运行概览"><img src="./assets/bot-logo.jpg" alt="" /><span><strong>DC Bot</strong><small>GRA—VT 运行台</small></span></a><p class="nav-caption">运行</p><button class="nav active" data-view="overview">运行概览</button><p class="nav-caption">功能</p><button class="nav" data-view="messages">发送消息</button><button class="nav" data-view="roles">Reaction Roles</button><button class="nav" data-view="onboarding">New Member Rules</button><button class="nav" data-view="welcome">Welcome Automation</button><button class="nav" data-view="moderation">Moderation</button><button class="nav" data-view="tickets">Tickets</button><button class="nav" data-view="saved">已保存内容</button><p class="nav-caption">系统</p><button class="nav nav-error" data-view="errors">错误报告 <span id="errorBadge" class="nav-badge hidden">0</span></button><button class="nav" data-view="announcements">项目公告 <span class="project-nav-dot" aria-hidden="true"></span></button><button class="nav" data-view="settings">设置</button><button id="logoutBtn" class="nav danger">退出登录</button><div class="sidebar-foot"><span class="pulse-dot"></span> 私有管理面板</div></aside>
 
     <main>
       <button id="mobileMenuBtn" class="mobile-menu" type="button" aria-label="打开导航" aria-expanded="false">导航</button>
@@ -328,7 +328,25 @@
         </section>
 
         <section id="errors" class="view hidden"><div class="section-intro"><p class="eyebrow">INCIDENT TRIAGE</p><h2>错误报告</h2><p>检查失败操作与运行警告，展开记录查看 traceback 和处理建议。</p></div><div class="error-toolbar"><label>级别<select id="errorLevelFilter"><option value="">全部级别</option><option value="ERROR">ERROR</option><option value="WARN">WARN</option></select></label><label>处理状态<select id="errorStatusFilter"><option value="open">未处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option><option value="">全部状态</option></select></label><button id="refreshErrorsBtn" class="secondary">刷新错误列表</button></div><div class="error-list-head"><span>时间</span><span>级别</span><span>功能</span><span>触发指令</span><span>错误信息</span><span>状态</span></div><div id="errorList" class="error-list" aria-live="polite"></div><button id="loadMoreErrorsBtn" class="secondary hidden">加载更多记录</button></section>
-        <section id="announcements" class="view hidden"><div class="section-intro"><p class="eyebrow">PROJECT INTAKE / RESERVED</p><h2>项目公告</h2><p>此入口为未来的项目抓取、人工校对和公告发布流程预留。</p></div><div class="reserved-note"><span class="pulse-dot"></span><div><strong>尚未接入</strong><p>当前不会抓取 gra-vt.my，也不会自动发布 Discord 消息。</p></div></div></section>
+        <section id="announcements" class="view hidden">
+          <div class="section-intro"><p class="eyebrow">GRA-VT / PROJECT INTAKE</p><h2>项目公告</h2><p>手动发现新项目，校对公告内容，再发送到所选服务器。</p></div>
+          <div class="project-scrape-bar"><div><strong id="projectScrapeStatus">尚未抓取</strong><p id="projectScrapeMeta">仅点击“立即抓取”时访问 Gra-VT 项目列表。</p></div><button id="scrapeProjectsBtn">立即抓取</button></div>
+          <div class="project-toolbar"><label>Discord 服务器<select id="projectGuild"></select></label><label>公告频道<select id="projectChannel"></select></label><button id="saveProjectChannelBtn" class="secondary">保存公告频道</button></div>
+          <div class="project-layout">
+            <div><h3 class="project-list-title">项目草稿 <span id="projectCount" class="muted"></span></h3><div id="projectList" class="project-list" aria-live="polite"></div></div>
+            <div id="projectEditorEmpty" class="project-editor-empty">选择一个项目草稿，检查抓取内容并编辑公告。</div>
+            <form id="projectEditor" class="panel project-editor hidden">
+              <div class="project-editor-heading"><div><p class="eyebrow">REVIEW BEFORE PUBLISH</p><h3>公告草稿</h3></div><span id="projectDraftStatus" class="project-status">草稿</span></div>
+              <label>公告标题<input id="projectDraftTitle" maxlength="256" required /></label>
+              <label>公告正文<textarea id="projectDraftBody" rows="7" maxlength="4000" required></textarea></label>
+              <div class="grid two"><label>项目日期<input id="projectDraftDate" maxlength="120" /></label><label>图片 URL<input id="projectDraftImage" type="url" placeholder="https://..." /></label></div>
+              <label>项目来源链接<input id="projectDraftSource" type="url" placeholder="https://gra-vt.my/projects/..." /></label>
+              <div class="project-preview-wrap"><h4>Discord Embed 预览</h4><div id="projectPreview" class="discord-message-surface"></div></div>
+              <div class="actions"><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button></div>
+              <p id="projectActionInfo" class="muted" aria-live="polite"></p>
+            </form>
+          </div>
+        </section>
 
         <!-- Settings: browser-local dashboard API URL configuration. -->
         <section id="settings" class="view hidden">
@@ -351,6 +369,7 @@
     <script src="./saved_items.js?v=20261008-dashboard-2"></script>
     <script src="./role_panels.js?v=20261008-dashboard-2"></script>
     <script src="./observability.js?v=20261008-dashboard-2"></script>
+    <script src="./project_announcements.js?v=20261008-projects-1"></script>
     <script src="./app.js?v=20261008-dashboard-4"></script>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </body>

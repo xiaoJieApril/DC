@@ -1264,6 +1264,7 @@ from dashboard_features import (
     moderation as moderation_routes,
     onboarding as onboarding_routes,
     observability as observability_routes,
+    project_announcements as project_announcement_routes,
     role_panels as role_panel_routes,
     saved_items as saved_item_routes,
     system as system_routes,
@@ -1282,6 +1283,7 @@ _DASHBOARD_FEATURES = (
     ticket_routes,
     message_routes,
     role_panel_routes,
+    project_announcement_routes,
 )
 _FEATURE_ENDPOINTS = {}
 for _feature in _DASHBOARD_FEATURES:
