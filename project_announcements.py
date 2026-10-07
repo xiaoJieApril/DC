@@ -16,6 +16,7 @@ PROJECTS_URL = f"{BASE_URL}/projects"
 DB_PATH = Path(__file__).resolve().parent / "data" / "projects.sqlite3"
 _DB_LOCK = threading.RLock()
 _FETCH_LOCK = threading.Lock()
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
 
 class _SameSiteRedirects(HTTPRedirectHandler):
@@ -122,10 +123,16 @@ class _PageParser(HTMLParser):
         if tag in ("script", "style", "noscript", "svg"):
             self._skip_depth += 1
         if self._card_depth:
-            self._card_depth += 1
-        elif tag == "a" and "project-card" in classes:
+            if tag not in _VOID_TAGS:
+                self._card_depth += 1
+            # The project-card class may be on a wrapping div while the
+            # actual project URL lives on an anchor somewhere inside it.
+            if tag == "a" and not self._card_href and attrs.get("href"):
+                self._card_href = attrs["href"]
+        elif "project-card" in classes:
             self._card_depth = 1
-            self._card_href = attrs.get("href", "")
+            # Also support pages where the card itself is the anchor.
+            self._card_href = attrs.get("href", "") if tag == "a" else ""
             self._card_parts = []
 
     def handle_endtag(self, tag):
@@ -133,7 +140,7 @@ class _PageParser(HTMLParser):
             self.in_title = False
         if tag in ("script", "style", "noscript", "svg") and self._skip_depth:
             self._skip_depth -= 1
-        if self._card_depth:
+        if self._card_depth and tag not in _VOID_TAGS:
             self._card_depth -= 1
             if self._card_depth == 0:
                 self.cards.append((self._card_href, " ".join(self._card_parts)))
