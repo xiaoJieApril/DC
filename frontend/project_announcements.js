@@ -1,4 +1,4 @@
-const projectDashboard = { rows: [], channels: {}, lastRun: null, activeId: null, loaded: false, busy: false };
+const projectDashboard = { rows: [], channels: {}, lastRun: null, activeId: null, loaded: false, aiSettings: null };
 
 function projectEscape(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -36,11 +36,19 @@ function renderProjectPreview() {
   const date = $("projectDraftDate").value.trim();
   const image = $("projectDraftImage").value.trim();
   const source = $("projectDraftSource").value.trim();
+  const donation = $("projectDraftDonationUrl").value.trim();
   const imageMarkup = /^https?:\/\//i.test(image) ? `<img class="project-preview-image" src="${projectEscape(image)}" alt="项目预览图" />` : "";
   const titleMarkup = title ? `<a class="project-embed-title" href="${projectEscape(source || "#")}" target="_blank" rel="noopener">${projectEscape(title)}</a>` : "";
   const dateMarkup = date ? `<div class="project-embed-date">${projectEscape(date)}</div>` : "";
   const sourceMarkup = /^https?:\/\//i.test(source) ? `<a class="project-embed-link" href="${projectEscape(source)}" target="_blank" rel="noopener">查看 Gra-VT 项目</a>` : "";
-  $("projectPreview").innerHTML = `<div class="discord-message-head"><img class="discord-avatar" src="./assets/bot-logo.jpg" alt=""/><div class="discord-message-meta"><strong>DC Bot</strong><span class="bot-tag">BOT</span><time>现在</time><small>发送项目公告</small></div></div><div class="discord-embed project-discord-embed">${titleMarkup}<div class="embed-body">${projectEscape(body).replace(/\n/g, "<br>") || "公告正文预览"}</div>${dateMarkup}${imageMarkup}${sourceMarkup}</div>`;
+  const extraFields = [
+    ["画师", $("projectDraftIllustrator").value.trim()],
+    ["募资目标", $("projectDraftFundingGoal").value.trim()],
+    ["最低捐款", $("projectDraftMinimumDonation").value.trim()],
+    ["捐款方式", donation],
+  ].filter(([, value]) => value).map(([label, value]) => `<div class="project-preview-field"><strong>${label}</strong><span>${projectEscape(value)}</span></div>`).join("");
+  const donationMarkup = /^https?:\/\//i.test(donation) ? `<a class="project-donation-link" href="${projectEscape(donation)}" target="_blank" rel="noopener">前往捐款</a>` : "";
+  $("projectPreview").innerHTML = `<div class="discord-message-head"><img class="discord-avatar" src="./assets/bot-logo.jpg" alt=""/><div class="discord-message-meta"><strong>DC Bot</strong><span class="bot-tag">BOT</span><time>现在</time><small>发送项目公告</small></div></div><div class="discord-embed project-discord-embed">${titleMarkup}<div class="embed-body">${projectEscape(body).replace(/\n/g, "<br>") || "公告正文预览"}</div>${dateMarkup}<div class="project-preview-fields">${extraFields}</div>${donationMarkup}${imageMarkup}${sourceMarkup}</div>`;
 }
 
 function selectProject(projectId) {
@@ -54,11 +62,17 @@ function selectProject(projectId) {
   $("projectDraftDate").value = project.draft_date || project.event_date || "";
   $("projectDraftImage").value = project.draft_image_url || project.image_url || "";
   $("projectDraftSource").value = project.draft_source_url || project.url || "";
+  $("projectDraftIllustrator").value = project.draft_illustrator || project.illustrator || "";
+  $("projectDraftFundingGoal").value = project.draft_funding_goal || project.funding_goal || "";
+  $("projectDraftMinimumDonation").value = project.draft_minimum_donation || project.minimum_donation || "";
+  $("projectDraftDonationUrl").value = project.draft_donation_url || project.donation_url || "";
   $("projectDraftStatus").textContent = projectStatusLabel(project);
-  $("projectActionInfo").textContent = project.fetch_error ? `抓取失败：${project.fetch_error}。点击立即抓取可重试。` : "";
+  const aiMessage = project.ai_status === "failed" ? `AI 总结失败，已保留网页抓取内容：${project.ai_error || "未知错误"}` : project.ai_status === "summarized" ? "AI 已整理此项目；发布前请校对金额、链接和画师信息。" : "当前使用网页抓取内容，尚未调用 AI。";
+  $("projectActionInfo").textContent = project.fetch_error ? `抓取失败：${project.fetch_error}。点击立即抓取可重试。` : aiMessage;
   const alreadyPublished = project.published_guilds?.includes(String($("projectGuild").value));
   ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource", "saveProjectDraftBtn"].forEach((id) => { $(id).disabled = false; });
   $("publishProjectBtn").disabled = Boolean(alreadyPublished);
+  $("summarizeProjectBtn").disabled = !projectDashboard.aiSettings?.enabled || project.status === "fetch_failed";
   $("publishProjectBtn").textContent = alreadyPublished ? "已发布到此服务器" : "发布到 Discord";
   if (alreadyPublished) $("projectActionInfo").textContent = "此项目已发布到当前服务器。你仍可为其他服务器发布。";
   renderProjectPreview();
@@ -81,6 +95,7 @@ async function loadProjectAnnouncements() {
   projectDashboard.channels = result.channels || {};
   projectDashboard.lastRun = result.last_run || null;
   projectDashboard.loaded = true;
+  await loadProjectAISettings();
   renderProjectRun();
   renderProjectList();
   if (state.guilds.length) {
@@ -139,12 +154,62 @@ async function saveProjectDraft() {
       draft_date: $("projectDraftDate").value,
       draft_image_url: $("projectDraftImage").value,
       draft_source_url: $("projectDraftSource").value,
+      draft_illustrator: $("projectDraftIllustrator").value,
+      draft_funding_goal: $("projectDraftFundingGoal").value,
+      draft_minimum_donation: $("projectDraftMinimumDonation").value,
+      draft_donation_url: $("projectDraftDonationUrl").value,
     }),
   });
   projectDashboard.rows = projectDashboard.rows.map((row) => row.id === updated.id ? updated : row);
   $("projectActionInfo").textContent = "草稿已保存。";
   toast("项目公告草稿已保存。");
   renderProjectList();
+}
+
+async function summarizeProjectDraft() {
+  const project = selectedProject();
+  if (!project) throw new Error("请先选择一个项目草稿。");
+  await saveProjectDraft();
+  const updated = await api(`/api/projects/${project.id}/summarize`, { method: "POST", body: "{}" });
+  projectDashboard.rows = projectDashboard.rows.map((row) => row.id === updated.id ? updated : row);
+  selectProject(updated.id);
+  toast("AI 已整理项目资讯，请检查重点字段后再发布。");
+}
+
+async function loadProjectAISettings() {
+  const settings = await api("/api/projects/ai-settings");
+  projectDashboard.aiSettings = settings;
+  $("projectAIEnabled").checked = Boolean(settings.enabled);
+  $("projectAIBaseUrl").value = settings.base_url || "";
+  $("projectAIModel").value = settings.model || "";
+  $("projectAIKey").value = "";
+  $("projectAISettingsStatus").textContent = `${settings.api_key_configured ? "服务器已保存 API Key。" : "尚未保存 API Key。"} ${settings.enabled ? "新抓取会调用 AI，总结可能产生 API 费用。" : "AI 总结已关闭，抓取只使用网页资料。"} API Key 只保存在服务器 .env 中，不会返回浏览器。`;
+  if (projectDashboard.activeId && selectedProject()) {
+    const button = $("summarizeProjectBtn");
+    if (button) button.disabled = !settings.enabled;
+  }
+  return settings;
+}
+
+async function saveProjectAISettings(clearKey = false) {
+  const payload = {
+    enabled: clearKey ? false : $("projectAIEnabled").checked,
+    base_url: $("projectAIBaseUrl").value.trim(),
+    model: $("projectAIModel").value.trim(),
+    api_key: clearKey ? "" : $("projectAIKey").value,
+    clear_api_key: clearKey,
+  };
+  try {
+    const result = await api("/api/projects/ai-settings", { method: "PUT", body: JSON.stringify(payload) });
+    projectDashboard.aiSettings = result;
+    $("projectAIKey").value = "";
+    await loadProjectAISettings();
+    if (projectDashboard.activeId && selectedProject()) selectProject(projectDashboard.activeId);
+    toast(clearKey ? "已移除服务器上的 AI API Key。" : "AI API 设置已保存在服务器。" );
+  } catch (error) {
+    $("projectAISettingsStatus").textContent = `设置保存失败：${localizeErrorMessage(error.message)}`;
+    throw error;
+  }
 }
 
 async function publishProjectDraft() {
@@ -206,6 +271,9 @@ function wireProjectAnnouncements() {
     toast("公告频道已保存。");
   }));
   $("saveProjectDraftBtn").addEventListener("click", () => runAction("保存草稿", saveProjectDraft));
+  $("summarizeProjectBtn").addEventListener("click", () => runAction("AI 整理", summarizeProjectDraft));
   $("publishProjectBtn").addEventListener("click", () => runAction("发布项目公告", publishProjectDraft));
-  ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource"].forEach((id) => $(id).addEventListener("input", renderProjectPreview));
+  ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource", "projectDraftIllustrator", "projectDraftFundingGoal", "projectDraftMinimumDonation", "projectDraftDonationUrl"].forEach((id) => $(id).addEventListener("input", renderProjectPreview));
+  $("saveProjectAISettingsBtn").addEventListener("click", () => runAction("保存 AI 设置", () => saveProjectAISettings(false)));
+  $("clearProjectAIKeyBtn").addEventListener("click", () => runAction("移除 API Key", () => saveProjectAISettings(true)));
 }

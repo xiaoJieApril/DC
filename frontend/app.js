@@ -304,7 +304,12 @@ function setView(name) {
   else if (name === "tickets") ensureTicketsLoaded();
   else if (name === "errors") loadErrors();
   else if (name === "announcements") ensureProjectAnnouncementsLoaded();
-  else if (name === "saved") loadSaved();
+  else if (name === "settings") {
+    loadProjectAISettings().catch((error) => {
+      const status = $("projectAISettingsStatus");
+      if (status) status.textContent = `无法读取 AI 设置：${localizeErrorMessage(error.message)}`;
+    });
+  } else if (name === "saved") loadSaved();
 }
 
 async function ensureTicketsLoaded() {

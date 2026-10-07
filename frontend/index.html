@@ -330,7 +330,7 @@
         <section id="errors" class="view hidden"><div class="section-intro"><p class="eyebrow">INCIDENT TRIAGE</p><h2>错误报告</h2><p>检查失败操作与运行警告，展开记录查看 traceback 和处理建议。</p></div><div class="error-toolbar"><label>级别<select id="errorLevelFilter"><option value="">全部级别</option><option value="ERROR">ERROR</option><option value="WARN">WARN</option></select></label><label>处理状态<select id="errorStatusFilter"><option value="open">未处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option><option value="">全部状态</option></select></label><button id="refreshErrorsBtn" class="secondary">刷新错误列表</button></div><div class="error-list-head"><span>时间</span><span>级别</span><span>功能</span><span>触发指令</span><span>错误信息</span><span>状态</span></div><div id="errorList" class="error-list" aria-live="polite"></div><button id="loadMoreErrorsBtn" class="secondary hidden">加载更多记录</button></section>
         <section id="announcements" class="view hidden">
           <div class="section-intro"><p class="eyebrow">GRA-VT / PROJECT INTAKE</p><h2>项目公告</h2><p>手动发现新项目，校对公告内容，再发送到所选服务器。</p></div>
-          <div class="project-scrape-bar"><div><strong id="projectScrapeStatus">尚未抓取</strong><p id="projectScrapeMeta">仅点击“立即抓取”时访问 Gra-VT 项目列表。</p></div><button id="scrapeProjectsBtn">立即抓取</button></div>
+          <div class="project-scrape-bar"><div><strong id="projectScrapeStatus">尚未抓取</strong><p id="projectScrapeMeta">抓取活动名称、时间、图片、画师、募资目标、最低捐款和捐款链接。可在设置中开启 AI 整理。</p></div><button id="scrapeProjectsBtn">立即抓取</button></div>
           <div class="project-toolbar"><label>Discord 服务器<select id="projectGuild"></select></label><label>公告频道<select id="projectChannel"></select></label><button id="saveProjectChannelBtn" class="secondary">保存公告频道</button></div>
           <div class="project-layout">
             <div><h3 class="project-list-title">项目草稿 <span id="projectCount" class="muted"></span></h3><div id="projectList" class="project-list" aria-live="polite"></div></div>
@@ -339,10 +339,12 @@
               <div class="project-editor-heading"><div><p class="eyebrow">REVIEW BEFORE PUBLISH</p><h3>公告草稿</h3></div><span id="projectDraftStatus" class="project-status">草稿</span></div>
               <label>公告标题<input id="projectDraftTitle" maxlength="256" required /></label>
               <label>公告正文<textarea id="projectDraftBody" rows="7" maxlength="4000" required></textarea></label>
-              <div class="grid two"><label>项目日期<input id="projectDraftDate" maxlength="120" /></label><label>图片 URL<input id="projectDraftImage" type="url" placeholder="https://..." /></label></div>
+              <div class="grid two"><label>活动时间<input id="projectDraftDate" maxlength="120" /></label><label>图片 URL<input id="projectDraftImage" type="url" placeholder="https://..." /></label></div>
+              <div class="grid two"><label>画师<input id="projectDraftIllustrator" maxlength="256" /></label><label>募资目标<input id="projectDraftFundingGoal" maxlength="120" placeholder="例如 RM1,600" /></label></div>
+              <div class="grid two"><label>最低捐款<input id="projectDraftMinimumDonation" maxlength="120" placeholder="例如 RM30" /></label><label>捐款链接<input id="projectDraftDonationUrl" type="url" placeholder="https://..." /></label></div>
               <label>项目来源链接<input id="projectDraftSource" type="url" placeholder="https://gra-vt.my/projects/..." /></label>
               <div class="project-preview-wrap"><h4>Discord Embed 预览</h4><div id="projectPreview" class="discord-message-surface"></div></div>
-              <div class="actions"><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button></div>
+              <div class="actions"><button type="button" id="summarizeProjectBtn" class="secondary">用 AI 整理</button><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button></div>
               <p id="projectActionInfo" class="muted" aria-live="polite"></p>
             </form>
           </div>
@@ -355,6 +357,15 @@
             <label>API Base URL<input id="apiBaseInput" placeholder="https://api.example.com" /></label>
             <button id="saveApiBaseBtn" class="secondary">保存 API 地址</button>
             <p class="muted">如果前端使用静态托管，请在此填写 Dashboard API 的访问地址。</p>
+          </div>
+          <div class="panel ai-settings-panel">
+            <h2>项目公告 AI 总结</h2>
+            <p>兼容 OpenAI Chat Completions API。AI 会整理项目名称、活动时间、图片、画师、募资目标、最低捐款和捐款链接；页面没有提供的信息保持留空，供你补充校对。</p>
+            <label class="check"><input id="projectAIEnabled" type="checkbox" />抓取新项目时启用 AI 总结</label>
+            <div class="grid two"><label>API Base URL<input id="projectAIBaseUrl" type="url" placeholder="https://api.example.com/v1" /></label><label>模型名称<input id="projectAIModel" placeholder="填写服务商提供的 model ID" /></label></div>
+            <label>API Key<input id="projectAIKey" type="password" autocomplete="new-password" placeholder="留空则保留已保存的 Key" /></label>
+            <div class="actions"><button id="saveProjectAISettingsBtn" type="button">保存 AI 设置</button><button id="clearProjectAIKeyBtn" class="secondary" type="button">移除已保存的 API Key</button></div>
+            <p id="projectAISettingsStatus" class="muted" aria-live="polite">API Key 只保存在服务器 .env 中，不会返回浏览器。</p>
           </div>
         </section>
       </section>
@@ -369,7 +380,7 @@
     <script src="./saved_items.js?v=20261008-dashboard-2"></script>
     <script src="./role_panels.js?v=20261008-dashboard-2"></script>
     <script src="./observability.js?v=20261008-dashboard-2"></script>
-    <script src="./project_announcements.js?v=20261008-projects-1"></script>
+    <script src="./project_announcements.js?v=20261008-projects-2"></script>
     <script src="./app.js?v=20261008-dashboard-4"></script>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </body>

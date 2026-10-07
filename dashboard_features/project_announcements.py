@@ -10,6 +10,7 @@ from dashboard_api import (
     request_actor,
 )
 import project_announcements as store
+import project_ai
 
 
 router = APIRouter()
@@ -22,6 +23,18 @@ class DraftPayload(BaseModel):
     draft_date: str = ""
     draft_image_url: str = ""
     draft_source_url: str = ""
+    draft_illustrator: str = ""
+    draft_funding_goal: str = ""
+    draft_minimum_donation: str = ""
+    draft_donation_url: str = ""
+
+
+class AISettingsPayload(BaseModel):
+    enabled: bool = False
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    clear_api_key: bool = False
 
 
 class ChannelPayload(BaseModel):
@@ -43,6 +56,21 @@ def get_projects():
     return store.list_projects()
 
 
+@router.get("/api/projects/ai-settings", dependencies=[Depends(require_admin)])
+def get_project_ai_settings():
+    return project_ai.get_settings()
+
+
+@router.put("/api/projects/ai-settings", dependencies=[Depends(require_admin)])
+def save_project_ai_settings(payload: AISettingsPayload):
+    try:
+        return project_ai.update_settings(payload.dict())
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"无法保存服务器 AI 设置：{exc}") from exc
+
+
 @router.post("/api/projects/scrape", dependencies=[Depends(require_admin)])
 def scrape_projects():
     try:
@@ -62,6 +90,39 @@ def save_project_draft(project_id: int, payload: DraftPayload):
         raise _http_error(exc) from exc
     if not project:
         raise HTTPException(status_code=404, detail="找不到该项目草稿。")
+    return next(item for item in store.list_projects()["projects"] if item["id"] == project_id)
+
+
+@router.post("/api/projects/{project_id}/summarize", dependencies=[Depends(require_admin)])
+def summarize_project_draft(project_id: int):
+    settings = project_ai.get_settings()
+    if not settings["enabled"] or not settings["api_key_configured"]:
+        raise HTTPException(status_code=400, detail="请先在 Dashboard 设置中配置并启用 AI 总结。")
+    project = store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="找不到该项目草稿。")
+    try:
+        result = project_ai.summarize_project({
+            "title": project["title"], "event_date": project["event_date"], "image_url": project["image_url"],
+            "illustrator": project["illustrator"], "funding_goal": project["funding_goal"],
+            "minimum_donation": project["minimum_donation"], "donation_url": project["donation_url"],
+            "source_text": project["description"],
+        })
+        store.update_draft(project_id, {
+            "draft_title": result["activity_name"] or project["draft_title"] or project["title"],
+            "draft_body": result["summary"] or project["draft_body"] or project["description"],
+            "draft_date": result["date"] or project["draft_date"] or project["event_date"],
+            "draft_image_url": result["image_url"] or project["draft_image_url"] or project["image_url"],
+            "draft_source_url": project["draft_source_url"] or project["url"],
+            "draft_illustrator": result["illustrator"] or project["draft_illustrator"] or project["illustrator"],
+            "draft_funding_goal": result["funding_goal"] or project["draft_funding_goal"] or project["funding_goal"],
+            "draft_minimum_donation": result["minimum_donation"] or project["draft_minimum_donation"] or project["minimum_donation"],
+            "draft_donation_url": result["donation_url"] or project["draft_donation_url"] or project["donation_url"],
+        })
+        store.set_ai_status(project_id, "summarized")
+    except Exception as exc:
+        store.set_ai_status(project_id, "failed", str(exc))
+        raise HTTPException(status_code=502, detail=f"AI 总结失败：{exc}") from exc
     return next(item for item in store.list_projects()["projects"] if item["id"] == project_id)
 
 
@@ -101,8 +162,17 @@ def publish_project(project_id: int, payload: PublishPayload):
     }
     if project["draft_source_url"]:
         embed["url"] = project["draft_source_url"]
+    embed["fields"] = []
     if project["draft_date"]:
-        embed["fields"] = [{"name": "日期", "value": project["draft_date"][:1024], "inline": True}]
+        embed["fields"].append({"name": "活动时间", "value": project["draft_date"][:1024], "inline": True})
+    for key, label in (("draft_illustrator", "画师"), ("draft_funding_goal", "募资目标"),
+                       ("draft_minimum_donation", "最低捐款")):
+        value = project.get(key, "").strip()
+        if value:
+            embed["fields"].append({"name": label, "value": value[:1024], "inline": True})
+    donation_url = project.get("draft_donation_url", "").strip()
+    if donation_url:
+        embed["fields"].append({"name": "捐款方式", "value": f"[前往捐款]({donation_url})"[:1024], "inline": True})
     if project["draft_image_url"]:
         embed["image"] = {"url": project["draft_image_url"]}
     try:

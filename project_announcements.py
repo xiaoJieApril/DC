@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import project_ai
+
 
 BASE_URL = "https://gra-vt.my"
 PROJECTS_URL = f"{BASE_URL}/projects"
@@ -88,6 +90,22 @@ def init_project_db():
           error TEXT NOT NULL DEFAULT ''
         );
         """)
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(projects)")}
+        additions = {
+            "illustrator": "TEXT NOT NULL DEFAULT ''",
+            "funding_goal": "TEXT NOT NULL DEFAULT ''",
+            "minimum_donation": "TEXT NOT NULL DEFAULT ''",
+            "donation_url": "TEXT NOT NULL DEFAULT ''",
+            "draft_illustrator": "TEXT NOT NULL DEFAULT ''",
+            "draft_funding_goal": "TEXT NOT NULL DEFAULT ''",
+            "draft_minimum_donation": "TEXT NOT NULL DEFAULT ''",
+            "draft_donation_url": "TEXT NOT NULL DEFAULT ''",
+            "ai_status": "TEXT NOT NULL DEFAULT 'scrape_only'",
+            "ai_error": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                db.execute(f"ALTER TABLE projects ADD COLUMN {name} {definition}")
 
 
 def _safe_project_url(href):
@@ -194,8 +212,8 @@ def _bundle_projects(bundle):
     return projects
 
 
-def _bundle_detail_text(bundle, project_url, detail_slug=""):
-    """Load text from a project's lazy-loaded route chunk, if the bundle maps one."""
+def _bundle_detail_source(bundle, project_url, detail_slug=""):
+    """Load a project's lazy-loaded JavaScript route chunk, if it is mapped."""
     route = urlparse(project_url).path.rsplit("/", 1)[-1]
     chunk = None
     for name in dict.fromkeys(filter(None, (detail_slug, route))):
@@ -204,13 +222,54 @@ def _bundle_detail_text(bundle, project_url, detail_slug=""):
             break
     if not chunk:
         return ""
-    source = _fetch_html(urljoin(BASE_URL, "/" + chunk.group(0)))
+    return _fetch_html(urljoin(BASE_URL, "/" + chunk.group(0)))
+
+
+def _js_child_texts(source):
     texts = []
     for match in re.finditer(r'children:"((?:\\.|[^"\\])*)"', source):
         value = _plain_text(_decode_js_string(match.group(1)))
         if len(value) >= 24 and value not in texts:
             texts.append(value)
-    return "\n\n".join(texts)[:3900]
+    return texts
+
+
+def _bundle_detail_text(bundle, project_url, detail_slug=""):
+    return "\n\n".join(_js_child_texts(_bundle_detail_source(bundle, project_url, detail_slug)))[:3900]
+
+
+def _bundle_fundraising_fields(source):
+    texts = [_plain_text(_decode_js_string(m.group(1))) for m in re.finditer(r'children:"((?:\\.|[^"\\])*)"', source)]
+    fields = {"illustrator": "", "funding_goal": "", "minimum_donation": "", "donation_url": ""}
+    labels = {
+        "illustrator": ("illustration by", "illustrated by", "art by", "artist"),
+        "funding_goal": ("target", "fundraising goal", "goal"),
+        "minimum_donation": ("minimum contribution", "minimum donation", "min. donation"),
+    }
+    for field, names in labels.items():
+        for index, value in enumerate(texts[:-1]):
+            if value.strip().lower().rstrip(":") in names:
+                fields[field] = texts[index + 1].strip()
+                break
+    donation_domains = ("forms.gle/", "docs.google.com/forms", "gofundme.com/", "ko-fi.com/", "give.asia/", "donorbox.org/", "buymeacoffee.com/")
+    raw_urls = re.findall(r'https?://[^"\'\s`\\<>]+', source)
+    for url in raw_urls:
+        clean_url = url.rstrip(".,);}]")
+        if any(domain in clean_url.lower() for domain in donation_domains):
+            fields["donation_url"] = clean_url
+            break
+    if not fields["donation_url"]:
+        # React often stores a donation URL in a prop rather than rendered text.
+        for pattern in (r'(?:donat\w*|contribut\w*|fundrais\w*|campaign\w*)\w*\s*[:=]\s*["\']([^"\']+)["\']',):
+            for match in re.finditer(pattern, source, re.I):
+                candidate = match.group(1).replace(r"\/", "/")
+                parsed = urlparse(candidate if "://" in candidate else urljoin(BASE_URL, candidate))
+                if parsed.scheme in ("http", "https") and parsed.netloc.lower() != "gra-vt.my":
+                    fields["donation_url"] = candidate if "://" in candidate else urljoin(BASE_URL, candidate)
+                    break
+            if fields["donation_url"]:
+                break
+    return fields
 
 
 class _PageParser(HTMLParser):
@@ -386,7 +445,9 @@ def scrape_new_projects():
                 details = item
                 if bundle:
                     details = dict(item)
-                    details["description"] = _bundle_detail_text(bundle, url, details.get("detail_slug", ""))
+                    detail_source = _bundle_detail_source(bundle, url, details.get("detail_slug", ""))
+                    details["description"] = "\n\n".join(_js_child_texts(detail_source))[:3900]
+                    details.update(_bundle_fundraising_fields(detail_source))
                     if not details["description"]:
                         # Some projects share a route chunk name that differs
                         # from their public URL; the listing data remains useful.
@@ -395,24 +456,52 @@ def scrape_new_projects():
                             details["description"] = fallback_description
                 else:
                     details = _read_project(url)
+                    details.update(_bundle_fundraising_fields(""))
+
+                ai_error = ""
+                ai_status = "scrape_only"
+                if project_ai.get_settings()["enabled"]:
+                    try:
+                        ai_result = project_ai.summarize_project({**details, "source_text": details.get("description", "")})
+                        details["title"] = ai_result.get("activity_name") or details.get("title", "")
+                        details["event_date"] = ai_result.get("date") or details.get("event_date", "")
+                        details["image_url"] = ai_result.get("image_url") or details.get("image_url", "")
+                        for name in ("illustrator", "funding_goal", "minimum_donation", "donation_url"):
+                            details[name] = ai_result.get(name) or details.get(name, "")
+                        details["description"] = ai_result.get("summary") or details.get("description", "")
+                        ai_status = "summarized"
+                    except Exception as exc:
+                        ai_status = "failed"
+                        ai_error = str(exc)[:1000]
                 now = _now()
                 with _DB_LOCK, _connect() as db:
                     if existing:
-                        db.execute("""UPDATE projects SET title=?,description=?,event_date=?,image_url=?,
+                        db.execute("""UPDATE projects SET title=?,description=?,event_date=?,image_url=?,illustrator=?,
+                          funding_goal=?,minimum_donation=?,donation_url=?,ai_status=?,ai_error=?,
                           draft_title=CASE WHEN draft_title='' THEN ? ELSE draft_title END,
                           draft_body=CASE WHEN draft_body='' THEN ? ELSE draft_body END,
                           draft_date=CASE WHEN draft_date='' THEN ? ELSE draft_date END,
                           draft_image_url=CASE WHEN draft_image_url='' THEN ? ELSE draft_image_url END,
+                          draft_illustrator=CASE WHEN draft_illustrator='' THEN ? ELSE draft_illustrator END,
+                          draft_funding_goal=CASE WHEN draft_funding_goal='' THEN ? ELSE draft_funding_goal END,
+                          draft_minimum_donation=CASE WHEN draft_minimum_donation='' THEN ? ELSE draft_minimum_donation END,
+                          draft_donation_url=CASE WHEN draft_donation_url='' THEN ? ELSE draft_donation_url END,
                           status='draft',fetch_error='',fetched_at=? WHERE url=?""",
-                          (details["title"], details["description"], details["event_date"], details["image_url"],
-                           details["title"], details["description"], details["event_date"], details["image_url"], now, url))
+                          (details["title"], details["description"], details["event_date"], details["image_url"], details.get("illustrator", ""),
+                           details.get("funding_goal", ""), details.get("minimum_donation", ""), details.get("donation_url", ""), ai_status, ai_error,
+                           details["title"], details["description"], details["event_date"], details["image_url"], details.get("illustrator", ""),
+                           details.get("funding_goal", ""), details.get("minimum_donation", ""), details.get("donation_url", ""), now, url))
                     else:
                         db.execute("""INSERT OR IGNORE INTO projects
-                          (url,title,description,event_date,image_url,draft_title,draft_body,draft_date,draft_image_url,
-                           draft_source_url,status,first_seen_at,fetched_at)
-                          VALUES(?,?,?,?,?,?,?,?,?,?, 'draft',?,?)""",
+                          (url,title,description,event_date,image_url,illustrator,funding_goal,minimum_donation,donation_url,
+                           draft_title,draft_body,draft_date,draft_image_url,draft_illustrator,draft_funding_goal,
+                           draft_minimum_donation,draft_donation_url,draft_source_url,ai_status,ai_error,status,first_seen_at,fetched_at)
+                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)""",
                           (url, details["title"], details["description"], details["event_date"], details["image_url"],
-                           details["title"], details["description"], details["event_date"], details["image_url"], url, now, now))
+                           details.get("illustrator", ""), details.get("funding_goal", ""), details.get("minimum_donation", ""), details.get("donation_url", ""),
+                           details["title"], details["description"], details["event_date"], details["image_url"],
+                           details.get("illustrator", ""), details.get("funding_goal", ""), details.get("minimum_donation", ""), details.get("donation_url", ""),
+                           url, ai_status, ai_error, now, now))
                         added += db.execute("SELECT changes()").fetchone()[0]
             except Exception as exc:
                 failed += 1
@@ -438,11 +527,12 @@ def scrape_new_projects():
 
 
 def update_draft(project_id, payload):
-    allowed = {"draft_title", "draft_body", "draft_date", "draft_image_url", "draft_source_url"}
+    allowed = {"draft_title", "draft_body", "draft_date", "draft_image_url", "draft_source_url",
+               "draft_illustrator", "draft_funding_goal", "draft_minimum_donation", "draft_donation_url"}
     values = {key: str(payload.get(key) or "").strip() for key in allowed}
     if len(values["draft_title"]) > 256 or len(values["draft_body"]) > 4000:
         raise ValueError("标题最多 256 个字符，正文最多 4000 个字符。")
-    for key in ("draft_image_url", "draft_source_url"):
+    for key in ("draft_image_url", "draft_source_url", "draft_donation_url"):
         if values[key] and (urlparse(values[key]).scheme not in ("http", "https") or not urlparse(values[key]).netloc):
             raise ValueError("图片和来源链接必须使用有效的 HTTP 或 HTTPS 地址。")
     with _DB_LOCK, _connect() as db:
@@ -451,9 +541,22 @@ def update_draft(project_id, payload):
             return None
         if row["status"] == "published":
             raise ValueError("已发布项目不能编辑；请在 Discord 中修改已发布消息。")
-        db.execute("UPDATE projects SET draft_title=?,draft_body=?,draft_date=?,draft_image_url=?,draft_source_url=?,status='draft' WHERE id=?",
-                   (values["draft_title"], values["draft_body"], values["draft_date"], values["draft_image_url"], values["draft_source_url"], project_id))
+        db.execute("""UPDATE projects SET draft_title=?,draft_body=?,draft_date=?,draft_image_url=?,draft_source_url=?,
+          draft_illustrator=?,draft_funding_goal=?,draft_minimum_donation=?,draft_donation_url=?,status='draft' WHERE id=?""",
+                   (values["draft_title"], values["draft_body"], values["draft_date"], values["draft_image_url"],
+                    values["draft_source_url"], values["draft_illustrator"], values["draft_funding_goal"],
+                    values["draft_minimum_donation"], values["draft_donation_url"], project_id))
         return _row(db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+
+def get_project(project_id):
+    with _DB_LOCK, _connect() as db:
+        return _row(db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+
+def set_ai_status(project_id, status, error=""):
+    with _DB_LOCK, _connect() as db:
+        db.execute("UPDATE projects SET ai_status=?,ai_error=? WHERE id=?", (status, str(error)[:1000], project_id))
 
 
 def set_announcement_channel(guild_id, channel_id):
