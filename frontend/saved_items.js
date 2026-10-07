@@ -109,8 +109,12 @@ function renderChannelMentionResults() {
     .filter((item) => !query || String(item.name || "").toLowerCase().includes(query))
     .slice(0, 15);
   list.innerHTML = "";
+  if (!config.guildId) {
+    list.innerHTML = '<p class="muted compact">请先选择服务器。</p>';
+    return;
+  }
   if (!channels.length) {
-    list.innerHTML = '<p class="muted compact">No matching channels.</p>';
+    list.innerHTML = `<p class="muted compact">${config.guildId ? "没有匹配的频道。" : "请先选择服务器。"}</p>`;
     return;
   }
   channels.forEach((channel) => {
@@ -217,5 +221,4 @@ async function editSaved(section, guildId, messageId, item) {
   setView("roles");
   toast(`Editing role panel ${messageId}`);
 }
-
 

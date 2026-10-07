@@ -295,7 +295,15 @@ function setView(name) {
   if (!titles[name]) return;
   $("viewTitle").textContent = titles[name][0];
   $("viewSubtitle").textContent = titles[name][1];
-  dashboardPageModules[name]?.load?.();
+  if (name === "overview") loadObservabilitySummary().catch(() => {});
+  else if (name === "messages") loadMessagePage();
+  else if (name === "roles") loadRolePanelPage();
+  else if (name === "onboarding") ensureOnboardingLoaded();
+  else if (name === "welcome") ensureWelcomeLoaded();
+  else if (name === "moderation") ensureModerationLoaded();
+  else if (name === "tickets") ensureTicketsLoaded();
+  else if (name === "errors") loadErrors();
+  else if (name === "saved") loadSaved();
 }
 
 async function ensureTicketsLoaded() {
@@ -701,7 +709,7 @@ function wireEvents() {
   $("stopBotBtn").addEventListener("click", () => runAction("End bot", stopBot));
   $("msgGuild").addEventListener("change", async () => {
     clearMentionResults();
-    await Promise.all([loadChannels("msg"), loadMessageMentionRoles()]);
+    await Promise.all([loadChannels("msg"), loadMessageMentionRoles(), loadRoles()]);
     renderMessagePreview();
   });
   ["msgTitle", "msgFooter", "msgContent"].forEach((id) => $(id).addEventListener("input", renderMessagePreview));
@@ -709,14 +717,26 @@ function wireEvents() {
   $("mentionRoleSearch").addEventListener("focus", () => {
     renderRoleMentionResults();
     openMentionDropdown("msg-role");
+    if (!state.roles[$("msgGuild").value]) loadRoles().then(renderRoleMentionResults).catch(() => {});
   });
   $("mentionRoleSearch").addEventListener("input", () => {
     renderRoleMentionResults();
     openMentionDropdown("msg-role");
   });
+  ["mentionRoleResults", "mentionMemberResults", "mentionChannelResults"].forEach((id) => {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeMentionDropdowns();
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        $(id).querySelector("button")?.focus();
+      }
+    });
+  });
   $("mentionMemberSearch").addEventListener("focus", () => {
     renderMemberMentionResults("msg");
     openMentionDropdown("msg-member");
+    clearTimeout(memberSearchTimer);
+    memberSearchTimer = setTimeout(searchMembers, 500);
   });
   $("mentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
@@ -726,6 +746,7 @@ function wireEvents() {
   $("mentionChannelSearch").addEventListener("focus", () => {
     renderChannelMentionResults();
     openMentionDropdown("msg-channel");
+    if (!state.channels[$("msgGuild").value]) loadChannels("msg").then(renderChannelMentionResults).catch(() => {});
   });
   $("mentionChannelSearch").addEventListener("input", () => {
     renderChannelMentionResults();
@@ -746,6 +767,7 @@ function wireEvents() {
   $("rrMentionRoleSearch").addEventListener("focus", () => {
     renderRoleMentionResults("rr");
     openMentionDropdown("rr-role");
+    if (!state.roles[$("rrGuild").value]) loadRoles().then(() => renderRoleMentionResults("rr")).catch(() => {});
   });
   $("rrMentionRoleSearch").addEventListener("input", () => {
     renderRoleMentionResults("rr");
@@ -754,6 +776,8 @@ function wireEvents() {
   $("rrMentionMemberSearch").addEventListener("focus", () => {
     renderMemberMentionResults("rr");
     openMentionDropdown("rr-member");
+    clearTimeout(memberSearchTimer);
+    memberSearchTimer = setTimeout(() => searchMembers("rr"), 150);
   });
   $("rrMentionMemberSearch").addEventListener("input", () => {
     clearTimeout(memberSearchTimer);
@@ -931,9 +955,19 @@ function wireEvents() {
     localStorage.setItem("apiBase", state.apiBase);
     toast("API 地址已保存在此浏览器。");
   });
+  ["mentionRoleResults", "mentionMemberResults", "mentionChannelResults"].forEach((id) => {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeMentionDropdowns();
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        $(id).querySelector("button")?.focus();
+      }
+    });
+  });
 }
 
 fillColors();
 renderMappings();
+wireObservabilityEvents();
 wireEvents();
 checkLogin();

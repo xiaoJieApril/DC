@@ -242,22 +242,5 @@ function wireObservabilityEvents() {
   }
 }
 
-// The view registry delegates loading to the page controller for each feature.
-const dashboardPageModules = {
-  overview: { load: loadObservabilitySummary },
-  messages: { load: loadMessagePage },
-  roles: { load: loadRolePanelPage },
-  onboarding: { load: ensureOnboardingLoaded },
-  welcome: { load: ensureWelcomeLoaded },
-  moderation: { load: ensureModerationLoaded },
-  tickets: { load: ensureTicketsLoaded },
-  errors: { load: loadErrors },
-  announcements: { load: () => Promise.resolve() },
-  saved: { load: loadSaved },
-  settings: { load: () => Promise.resolve() },
-};
-
-document.addEventListener("DOMContentLoaded", wireObservabilityEvents, { once: true });
-
 const savedTheme = localStorage.getItem("dashboardTheme");
 if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;

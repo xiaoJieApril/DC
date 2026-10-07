@@ -127,7 +127,7 @@ function renderRoleMentionResults(scope = "msg") {
     .slice(0, 10);
   list.innerHTML = "";
   if (!matches.length) {
-    list.innerHTML = '<p class="muted compact">No matching roles.</p>';
+    list.innerHTML = `<p class="muted compact">${guildId ? "没有匹配的身份组。" : "请先选择服务器。"}</p>`;
     return;
   }
   matches.forEach((role) => {
@@ -156,7 +156,7 @@ function renderMemberMentionResults(scope = "msg", rows = null, message = "") {
   }
   const members = rows || state.members[config.guildId] || [];
   if (!members.length) {
-    list.innerHTML = '<p class="muted compact">Search members by name.</p>';
+    list.innerHTML = `<p class="muted compact">${config.guildId ? "输入至少 2 个字符搜索成员。" : "请先选择服务器。"}</p>`;
     return;
   }
   members.forEach((member) => {
@@ -180,8 +180,8 @@ async function searchMembers(scope = "msg") {
   const guildId = config.guildId;
   const query = $(config.memberInput).value.trim();
   if (!guildId || query.length < 2) {
-    state.members[guildId] = [];
-    renderMemberMentionResults(scope, [], query ? "Type at least 2 characters." : "");
+    if (!guildId) state.members[guildId] = [];
+    renderMemberMentionResults(scope, [], query ? "请输入至少 2 个字符。" : "输入至少 2 个字符搜索成员。");
     openMentionDropdown(`${scope}-member`);
     config.render();
     return;
@@ -202,7 +202,7 @@ async function searchMembers(scope = "msg") {
     state.members[guildId] = [];
     renderMemberMentionResults(scope, [], "Member search unavailable");
     openMentionDropdown(`${scope}-member`);
-    toast(`Member search unavailable: ${err.message}`);
+    toast(`无法搜索成员：${localizeErrorMessage(err.message)}`);
   }
 }
 
