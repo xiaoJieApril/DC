@@ -1,5 +1,6 @@
 """SQLite persistence and same-origin scraping for Gra-VT projects."""
 import html
+import json
 import re
 import sqlite3
 import threading
@@ -97,6 +98,119 @@ def _safe_project_url(href):
     if not parsed.path.startswith("/projects/"):
         return ""
     return f"{BASE_URL}{parsed.path.rstrip('/') or '/'}"
+
+
+def _decode_js_string(value):
+    """Decode the JSON-compatible string escapes used in the site's Vite bundle."""
+    value = re.sub(r"\\x([0-9a-fA-F]{2})", r"\\u00\1", value)
+    try:
+        return json.loads('"' + value.replace("/", r"\/") + '"')
+    except (json.JSONDecodeError, ValueError):
+        return value.replace(r"\'", "'")
+
+
+def _balanced_array(source, start):
+    depth = 0
+    quote = ""
+    escaped = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in ('"', "'", "`"):
+            quote = char
+        elif char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    return ""
+
+
+def _bundle_objects(array_source):
+    objects = []
+    depth = 0
+    quote = ""
+    escaped = False
+    object_start = None
+    for index, char in enumerate(array_source):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in ('"', "'", "`"):
+            quote = char
+        elif char == "{":
+            if depth == 0:
+                object_start = index
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0 and object_start is not None:
+                objects.append(array_source[object_start:index + 1])
+                object_start = None
+    return objects
+
+
+def _bundle_projects(bundle):
+    """Read the public project index embedded in the Gra-VT SPA bundle."""
+    marker = re.search(r"\b[A-Za-z_$][\w$]*=\[\{slug:", bundle)
+    if not marker:
+        raise ValueError("Gra-VT 项目 bundle 中没有找到项目清单。")
+    array_start = bundle.find("[", marker.start())
+    objects = _bundle_objects(_balanced_array(bundle, array_start))
+    projects = []
+    for item in objects:
+        def string_field(name):
+            match = re.search(rf'\b{name}:"((?:\\.|[^"\\])*)"', item)
+            return _decode_js_string(match.group(1)) if match else ""
+
+        title = string_field("title")
+        link = _safe_project_url(string_field("link"))
+        if not title or not link:
+            continue
+        start = re.search(r"\bstartDate:xi\((\d+),(\d+),(\d+)\)", item)
+        end = re.search(r"\bendDate:xi\((\d+),(\d+),(\d+)\)", item)
+        date = ""
+        if start:
+            date = "-".join(part.zfill(2) if i else part for i, part in enumerate(start.groups()))
+            if end:
+                date += " – " + "-".join(part.zfill(2) if i else part for i, part in enumerate(end.groups()))
+        image = string_field("image")
+        projects.append({"url": link, "detail_slug": string_field("slug"), "title": title,
+                         "description": "", "event_date": date,
+                         "image_url": urljoin(BASE_URL, image) if image else ""})
+    if not projects:
+        raise ValueError("Gra-VT bundle 已更新，但无法读取项目清单格式。")
+    return projects
+
+
+def _bundle_detail_text(bundle, project_url, detail_slug=""):
+    """Load text from a project's lazy-loaded route chunk, if the bundle maps one."""
+    route = urlparse(project_url).path.rsplit("/", 1)[-1]
+    chunk = None
+    for name in dict.fromkeys(filter(None, (detail_slug, route))):
+        chunk = re.search(r'assets/([^"\']*' + re.escape(name) + r'[^"\']*\.js)', bundle)
+        if chunk:
+            break
+    if not chunk:
+        return ""
+    source = _fetch_html(urljoin(BASE_URL, "/" + chunk.group(0)))
+    texts = []
+    for match in re.finditer(r'children:"((?:\\.|[^"\\])*)"', source):
+        value = _plain_text(_decode_js_string(match.group(1)))
+        if len(value) >= 24 and value not in texts:
+            texts.append(value)
+    return "\n\n".join(texts)[:3900]
 
 
 class _PageParser(HTMLParser):
@@ -240,17 +354,47 @@ def scrape_new_projects():
     found = added = failed = 0
     run_error = ""
     try:
+        listing_html = _fetch_html(PROJECTS_URL)
         listing = _PageParser()
-        listing.feed(_fetch_html(PROJECTS_URL))
-        urls = list(dict.fromkeys(filter(None, (_safe_project_url(href) for href, _ in listing.cards))))
-        found = len(urls)
-        for url in urls:
+        listing.feed(listing_html)
+        bundle = ""
+        if listing.cards:
+            discovered = [{"url": url, "title": "", "description": "", "event_date": "", "image_url": ""}
+                          for url in dict.fromkeys(filter(None, (_safe_project_url(href) for href, _ in listing.cards)))]
+        else:
+            # Gra-VT is a client-rendered SPA: the web server serves an empty
+            # #root shell, while the card data lives in its same-origin Vite bundle.
+            module_script = re.search(
+                r'<script\b(?=[^>]*\btype=["\']module["\'])(?=[^>]*\bsrc=["\']([^"\']+)["\'])[^>]*>',
+                listing_html, re.I,
+            )
+            if not module_script:
+                raise ValueError("项目页没有卡片 HTML，也没有可读取的 module script。")
+            bundle = _fetch_html(urljoin(PROJECTS_URL, module_script.group(1)))
+            discovered = _bundle_projects(bundle)
+        # Canonical URL is the deduplication key even if the page repeats an item.
+        by_url = {item["url"]: item for item in discovered}
+        discovered = list(by_url.values())
+        found = len(discovered)
+        for item in discovered:
+            url = item["url"]
             with _DB_LOCK, _connect() as db:
                 existing = db.execute("SELECT id, status FROM projects WHERE url=?", (url,)).fetchone()
             if existing and existing["status"] != "fetch_failed":
                 continue
             try:
-                details = _read_project(url)
+                details = item
+                if bundle:
+                    details = dict(item)
+                    details["description"] = _bundle_detail_text(bundle, url, details.get("detail_slug", ""))
+                    if not details["description"]:
+                        # Some projects share a route chunk name that differs
+                        # from their public URL; the listing data remains useful.
+                        fallback_description = _read_project(url)["description"]
+                        if fallback_description.lower() != "grá-vt":
+                            details["description"] = fallback_description
+                else:
+                    details = _read_project(url)
                 now = _now()
                 with _DB_LOCK, _connect() as db:
                     if existing:
