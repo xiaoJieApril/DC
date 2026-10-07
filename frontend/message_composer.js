@@ -214,17 +214,25 @@ function renderMessagePreview() {
   const footer = $("msgFooter").value.trim();
   const color = $("msgColor").value;
   const content = $("msgContent").value.trim();
+  const guildId = $("msgGuild").value;
+  const guild = state.guilds.find((item) => String(item.id) === String(guildId));
+  const channel = (state.channels[guildId] || []).find((item) => String(item.id) === String($("msgChannel").value));
+  const avatar = window.DASHBOARD_BOT_AVATAR_URL || "./assets/bot-logo.jpg";
+  const header = `<div class="discord-message-head"><img class="discord-avatar" src="${escapeHtml(avatar)}" alt="" /><div class="discord-message-meta"><strong>GRA—VT Bot</strong><span class="bot-tag">APP</span><time>现在</time><small>${escapeHtml(guild?.name || "GRA—VT 社区")} · #${escapeHtml(channel?.name || "公告频道")}</small></div></div>`;
   if ($("msgEmbed").checked) {
     box.innerHTML = `
-      <div class="embed-preview embed-${color.toLowerCase()}">
-        ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
-        <div class="embed-body">${renderDiscordText(content)}</div>
-        ${footer ? `<div class="embed-footer">${escapeHtml(footer)}</div>` : ""}
-      </div>
+      <article class="discord-message-surface">
+        ${header}
+        <div class="discord-embed embed-${color.toLowerCase()}">
+          ${title ? `<div class="embed-title">${escapeHtml(title)}</div>` : ""}
+          <div class="embed-body">${renderDiscordText(content || "消息内容预览")}</div>
+          ${footer ? `<div class="embed-footer">${escapeHtml(footer)}</div>` : ""}
+        </div>
+      </article>
     `;
     return;
   }
-  box.innerHTML = `<div class="plain-preview">${renderDiscordText(content)}</div>`;
+  box.innerHTML = `<article class="discord-message-surface">${header}<div class="discord-plain-content">${renderDiscordText(content || "消息内容预览")}</div></article>`;
 }
 
 async function loadMessagePage() {
