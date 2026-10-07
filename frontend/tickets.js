@@ -1,9 +1,9 @@
 // Dashboard feature logic: tickets
 function applyTicketSettings(settings = {}) {
   state.tickets.settings = settings;
-  $("ticketPanelTitle").value = settings.panel_title || "Need help?";
-  $("ticketPanelDescription").value = settings.panel_description || "Open a private ticket for staff review. Your message will be visible to staff only.";
-  $("ticketButtonLabel").value = settings.button_label || "Open Ticket";
+  $("ticketPanelTitle").value = settings.panel_title || "需要帮助吗？";
+  $("ticketPanelDescription").value = settings.panel_description || "创建仅员工可查看的工单。";
+  $("ticketButtonLabel").value = settings.button_label || "打开工单";
   $("ticketPanelColor").value = settings.panel_color || "Blurple";
   if ([...$("ticketChannel").options].some((option) => option.value === settings.ticket_channel_id)) {
     $("ticketChannel").value = settings.ticket_channel_id || "";
@@ -13,13 +13,13 @@ function applyTicketSettings(settings = {}) {
   }
   $("ticketInfo").textContent = settings.panel_message_id
     ? `Ticket panel message: ${settings.panel_message_id}`
-    : "Publish a public ticket entry. Ticket content is only sent to staff log and dashboard.";
+    : "发布工单入口；工单内容仅发送给员工日志并显示在 Dashboard。";
 }
 
 function collectTicketSettings() {
   return {
     ticket_channel_id: $("ticketChannel").value,
-    log_channel_id: $("ticketLogChannel").value || $("modLogChannel").value,
+    log_channel_id: $("ticketLogChannel").value,
     panel_message_id: state.tickets.settings?.panel_message_id || "",
     panel_title: $("ticketPanelTitle").value,
     panel_description: $("ticketPanelDescription").value,
@@ -29,9 +29,9 @@ function collectTicketSettings() {
 }
 
 async function loadTickets() {
-  const guildId = $("modGuild").value;
+  const guildId = $("ticketGuild").value;
   if (!guildId) return;
-  setTicketStatus("Loading tickets...");
+  $("ticketInfo").textContent = "正在加载工单…";
   const view = state.tickets.view || "active";
   const data = await api(`/api/tickets/${guildId}?limit=80&view=${view}`);
   state.tickets = { ...state.tickets, ...data, view };
@@ -41,13 +41,29 @@ async function loadTickets() {
   $("ticketActiveTab").classList.toggle("secondary", view !== "active");
   $("ticketArchiveTab").classList.toggle("secondary", view !== "archive");
   renderTickets(data.tickets || []);
+  $("ticketInfo").textContent = data.settings?.panel_message_id
+    ? `已发布面板消息：${data.settings.panel_message_id}`
+    : "尚未发布工单入口。工单内容仅发送给员工日志并显示在 Dashboard。";
+}
+
+async function loadTicketSelectors(force = false) {
+  const guildId = $("ticketGuild").value;
+  if (!guildId) return;
+  await fillChannelSelect("ticketChannel", guildId, "选择工单频道", force);
+  await fillChannelSelect("ticketLogChannel", guildId, "选择员工日志频道", force);
+}
+
+async function refreshTicketControls(force = false) {
+  await ensureGuildsLoaded(false);
+  await loadTicketSelectors(force);
+  await loadTickets();
 }
 
 function renderTickets(rows) {
   const list = $("ticketList");
   list.innerHTML = "";
   if (!rows.length) {
-    list.innerHTML = '<p class="muted">No tickets yet.</p>';
+    list.innerHTML = '<p class="muted">暂无工单记录。</p>';
     return;
   }
   rows.forEach((row) => {
@@ -74,14 +90,14 @@ function renderTickets(rows) {
 }
 
 async function saveTicketSettings() {
-  const guildId = $("modGuild").value;
+  const guildId = $("ticketGuild").value;
   requireValue(guildId, "Choose a server first.");
   const settings = await api(`/api/tickets/${guildId}/settings`, {
     method: "PUT",
     body: JSON.stringify(collectTicketSettings()),
   });
   applyTicketSettings(settings);
-  toast("Ticket settings saved.");
+  toast("工单设置已保存。");
   await loadAuditLogs();
 }
 
@@ -93,23 +109,22 @@ async function publishTicketPanel() {
   requireValue(settings.button_label, "Ticket button label is required.");
   requireDiscordWriteReady();
   await saveTicketSettings();
-  const guildId = $("modGuild").value;
+  const guildId = $("ticketGuild").value;
   const result = await api(`/api/tickets/${guildId}/publish`, { method: "POST" });
   applyTicketSettings(result.settings || {});
-  toast(`Ticket panel published: ${result.message_id}`);
+  toast(`工单面板已发布，消息 ID：${result.message_id}`);
   await loadAuditLogs();
 }
 
 async function updateTicketStatus(ticketId, status) {
   if (!ticketId) return;
-  const guildId = $("modGuild").value;
+  const guildId = $("ticketGuild").value;
   const updated = await api(`/api/tickets/${guildId}/${ticketId}`, {
     method: "PATCH",
     body: JSON.stringify({ status, notes: `Marked ${status} from dashboard.` }),
   });
-  toast(`Ticket ${updated.ticket_id} marked ${updated.status}.`);
+  toast(`工单 ${updated.ticket_id} 状态已更新为 ${updated.status}。`);
   await loadTickets();
   await loadAuditLogs();
 }
-
 

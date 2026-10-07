@@ -67,16 +67,27 @@ function toast(message) {
   setTimeout(() => box.classList.add("hidden"), 4500);
 }
 
+function localizeErrorMessage(message) {
+  const translations = [
+    [/Choose a server first\./g, "请先选择服务器。"],
+    [/Choose a channel first\./g, "请先选择频道。"],
+    [/Message cannot be empty\./g, "消息内容不能为空。"],
+    [/Request failed/g, "请求失败"],
+    [/Discord is cooling down\. Try again in (\d+)s\./g, "Discord 正在冷却，请在 $1 秒后重试。"],
+  ];
+  return translations.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), String(message || ""));
+}
+
 async function runAction(label, fn) {
   if (activeActions.has(label)) {
-    toast(`${label} is already running.`);
+    toast(`${label}正在处理中。`);
     return;
   }
   activeActions.add(label);
   try {
     await fn();
   } catch (err) {
-    toast(`${label} failed: ${err.message}`);
+    toast(`${label}失败：${localizeErrorMessage(err.message)}`);
   } finally {
     activeActions.delete(label);
   }
@@ -107,7 +118,7 @@ async function api(path, options = {}) {
       // keep raw detail
     }
     if (payload && typeof payload === "object") {
-      const error = new Error(payload.message || "Request failed");
+      const error = new Error(localizeErrorMessage(payload.message || "请求失败"));
       error.code = payload.code || "request_failed";
       error.scope = payload.scope || "";
       error.retryAfterSeconds = Number(payload.retry_after_seconds || (response.status === 503 ? 60 : 0));
@@ -120,7 +131,7 @@ async function api(path, options = {}) {
       }
       throw error;
     }
-    throw new Error(String(payload));
+    throw new Error(localizeErrorMessage(String(payload)));
   }
   if (response.status === 204) return null;
   return response.json();
@@ -263,28 +274,41 @@ setInterval(renderDiscordProtection, 1000);
 
 function setView(name) {
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
+  if (!$(name)) return;
   $(name).classList.remove("hidden");
   document.querySelectorAll(".nav[data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
   });
   const titles = {
-    overview: ["Overview", "Manage your Discord bot from the web."],
-    messages: ["Send Message", "Send plain text or embeds."],
-    roles: ["Reaction Roles", "Create reaction or multi-select role pickers."],
-    onboarding: ["New Member Rules", "Private rules gate with language selection."],
-    welcome: ["Welcome Automation", "Greet new members and send one delayed follow-up."],
-    moderation: ["Moderation", "Record warnings, probation, timeout, and appeal status."],
-    saved: ["Saved", "View and remove saved messages and role panels."],
-    settings: ["Settings", "Configure this browser's API URL."],
+    overview: ["运行概览", "查看 bot 连接状态和功能活动。"],
+    messages: ["发送消息", "发送文字或 Embed。"],
+    roles: ["Reaction Roles", "创建和管理身份组选择面板。"],
+    onboarding: ["New Member Rules", "设置入群规则和语言选择。"],
+    welcome: ["Welcome Automation", "设置欢迎消息和延迟提醒。"],
+    moderation: ["Moderation", "管理违规规则、案件和处理记录。"],
+    tickets: ["Tickets", "管理工单入口并处理成员请求。"],
+    errors: ["错误报告", "查看异常、原因提示并更新处理状态。"],
+    announcements: ["项目公告", "未来用于校对并发布 Gra-VT 项目公告。"],
+    saved: ["已保存内容", "查看和管理已保存的消息与面板。"],
+    settings: ["设置", "配置此浏览器使用的 API 地址。"],
   };
+  if (!titles[name]) return;
   $("viewTitle").textContent = titles[name][0];
   $("viewSubtitle").textContent = titles[name][1];
-  if (name === "onboarding") {
-    ensureOnboardingLoaded();
-  } else if (name === "welcome") {
-    ensureWelcomeLoaded();
-  } else if (name === "moderation") {
-    ensureModerationLoaded();
+  dashboardPageModules[name]?.load?.();
+}
+
+async function ensureTicketsLoaded() {
+  try {
+    if (!state.guilds.length) await ensureGuildsLoaded();
+    if (!state.guilds.length) {
+      $("ticketInfo").textContent = "暂无可用服务器。请确认 bot 已加入服务器后刷新。";
+      return;
+    }
+    fillGuildSelectors();
+    await refreshTicketControls();
+  } catch (err) {
+    $("ticketInfo").textContent = `无法加载工单数据：${localizeErrorMessage(err.message)}`;
   }
 }
 
@@ -299,7 +323,7 @@ async function ensureOnboardingLoaded() {
     }
     await loadOnboardingControls();
   } catch (err) {
-    $("obInfo").textContent = `Could not load New Member Rules selectors: ${err.message}`;
+    $("obInfo").textContent = `无法加载 New Member Rules 选项：${localizeErrorMessage(err.message)}`;
   }
 }
 
@@ -307,13 +331,13 @@ async function ensureWelcomeLoaded() {
   try {
     if (!state.guilds.length) await ensureGuildsLoaded();
     if (!state.guilds.length) {
-      $("welcomeInfo").textContent = "Server list unavailable.";
+      $("welcomeInfo").textContent = "服务器列表不可用。";
       return;
     }
     fillGuildSelectors();
     await refreshWelcomeControls();
   } catch (err) {
-    $("welcomeInfo").textContent = `Welcome Automation unavailable: ${err.message}`;
+    $("welcomeInfo").textContent = `Welcome Automation 不可用：${localizeErrorMessage(err.message)}`;
   }
 }
 
@@ -324,16 +348,14 @@ async function ensureModerationLoaded() {
       await ensureGuildsLoaded();
     }
     if (!state.guilds.length) {
-      fillSelectMessage($("modGuild"), "Server list unavailable");
-      setModerationStatus("Server list unavailable. Use Refresh after the bot/API can read guilds.");
-      setTicketStatus("Ticket list unavailable until a server is loaded.");
+      fillSelectMessage($("modGuild"), "暂无可用服务器");
+      setModerationStatus("暂无可用服务器。请确认 bot 已加入服务器后刷新。");
       return;
     }
     fillGuildSelectors();
     await refreshModerationControls();
   } catch (err) {
-    setModerationStatus(`Could not load moderation data: ${err.message}`);
-    setTicketStatus(`Could not load ticket data: ${err.message}`);
+    setModerationStatus(`无法加载 Moderation 数据：${localizeErrorMessage(err.message)}`);
   }
 }
 
@@ -386,7 +408,7 @@ async function loadInitial(forceDiscord = false) {
   initialLoadPromise = (async () => {
     fillColors();
     $("apiBaseInput").value = state.apiBase;
-    await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(forceDiscord), loadSaved(), loadAuditLogs()]);
+  await Promise.allSettled([loadHealth(), loadBotStatus(), loadGuilds(forceDiscord), loadSaved(), loadAuditLogs(), loadObservabilitySummary()]);
     renderLatestUpdates();
     renderMessagePreview();
     renderRolePreview();
@@ -417,8 +439,7 @@ async function loadHealth() {
   try {
     const health = await api("/api/health");
     if (health.discord && health.discord.retry_after_seconds) setDiscordCooldown(health.discord.retry_after_seconds);
-    $("healthBox").textContent = JSON.stringify(health, null, 2);
-    document.querySelector(".stat strong").textContent = String(health.storage || "json").toUpperCase();
+  $("healthBox").textContent = health.ok ? "Dashboard API 在线" : "Dashboard API 不可用";
   } catch (err) {
     $("healthBox").textContent = err.message;
   }
@@ -429,9 +450,7 @@ function renderBotStatus(status) {
   const badge = $("botStatusBadge");
   const text = $("botStatusText");
   const logBox = $("botLogBox");
-  badge.classList.toggle("running", !!status.running);
-  badge.classList.toggle("stopped", !status.running);
-  badge.textContent = status.running ? "Running" : status.mode === "systemd" ? "Systemd" : "Stopped";
+  // Process controls are separate from Gateway health; the heartbeat remains authoritative.
   if (status.mode === "systemd") {
     const service = status.service || "dc-gra-vt-bot";
     if (status.status_available === false) {
@@ -460,9 +479,6 @@ async function loadBotStatus() {
   try {
     renderBotStatus(await api("/api/bot/status"));
   } catch (err) {
-    $("botStatusBadge").textContent = "Unknown";
-    $("botStatusBadge").classList.remove("running");
-    $("botStatusBadge").classList.add("stopped");
     $("botStatusText").textContent = err.message;
   }
 }
@@ -501,7 +517,7 @@ async function loadGuilds(force = false) {
 }
 
 function fillGuildSelectors() {
-  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild"].forEach((id) => {
+  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild", "ticketGuild"].forEach((id) => {
     if (!$(id)) return;
     if (!state.guilds.length) {
       fillSelectMessage($(id), "No servers available");
@@ -526,7 +542,7 @@ async function ensureGuildsLoaded(force = false) {
     return state.guilds;
   }
   guildLoadAttempted = true;
-  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild"].forEach((id) => {
+  ["msgGuild", "rrGuild", "obGuild", "welcomeGuild", "modGuild", "ticketGuild"].forEach((id) => {
     if ($(id)) fillSelectMessage($(id), "Loading servers...");
   });
   guildsPromise = (async () => {
@@ -534,14 +550,13 @@ async function ensureGuildsLoaded(force = false) {
     state.guilds = unwrapDiscord(await api("/api/discord/guilds"));
   } catch (err) {
     state.guilds = [];
-    fillSelectMessage($("msgGuild"), "Server list unavailable");
-    fillSelectMessage($("rrGuild"), "Server list unavailable");
-    fillSelectMessage($("obGuild"), "Server list unavailable");
-    fillSelectMessage($("welcomeGuild"), "Server list unavailable");
-    fillSelectMessage($("modGuild"), "Server list unavailable");
-    setModerationStatus("Server list unavailable. Check the dashboard API connection and try again.");
-    setTicketStatus("Ticket settings unavailable until the server list loads.");
-    toast(`Server list unavailable: ${err.message}`);
+    fillSelectMessage($("msgGuild"), "服务器列表不可用");
+    fillSelectMessage($("rrGuild"), "服务器列表不可用");
+    fillSelectMessage($("obGuild"), "服务器列表不可用");
+    fillSelectMessage($("welcomeGuild"), "服务器列表不可用");
+    fillSelectMessage($("ticketGuild"), "服务器列表不可用");
+    setModerationStatus("服务器列表不可用。检查 Dashboard API 连接后重试。");
+    toast(`服务器列表不可用：${err.message}`);
     return [];
   }
   fillGuildSelectors();
@@ -668,9 +683,9 @@ function wireEvents() {
       state.accessToken = result.access_token || "";
       localStorage.setItem("accessToken", state.accessToken);
       await checkLogin();
-      toast("Logged in.");
+      toast("已登录。");
     } catch (err) {
-      $("loginError").textContent = err.message;
+    $("loginError").textContent = localizeErrorMessage(err.message);
     }
   });
 
@@ -759,7 +774,6 @@ function wireEvents() {
   $("saveWelcomeBtn").addEventListener("click", () => runAction("Save Welcome Automation", saveWelcomeAutomation));
   $("modGuild").addEventListener("change", async () => {
     state.moderation.view = "active";
-    state.tickets.view = "active";
     state.moderation.evidence = null;
     resetRuleForm();
     renderEvidencePreview();
@@ -775,7 +789,8 @@ function wireEvents() {
   $("fetchEvidenceBtn").addEventListener("click", () => runAction("Fetch evidence", fetchModerationEvidence));
   $("caseActiveTab").addEventListener("click", () => runAction("Load active cases", async () => { state.moderation.view = "active"; await loadModeration(); }));
   $("caseArchiveTab").addEventListener("click", () => runAction("Load case archive", async () => { state.moderation.view = "archive"; await loadModeration(); }));
-  $("ticketActiveTab").addEventListener("click", () => runAction("Load active tickets", async () => { state.tickets.view = "active"; await loadTickets(); }));
+  $("ticketGuild").addEventListener("change", () => runAction("加载工单服务器", async () => { state.tickets.view = "active"; await refreshTicketControls(); }));
+  $("ticketActiveTab").addEventListener("click", () => runAction("加载活动工单", async () => { state.tickets.view = "active"; await loadTickets(); }));
   $("ticketArchiveTab").addEventListener("click", () => runAction("Load ticket archive", async () => { state.tickets.view = "archive"; await loadTickets(); }));
   $("saveModSettingsBtn").addEventListener("click", () => runAction("Save moderation settings", saveModerationSettings));
   $("refreshModBtn").addEventListener("click", () => runAction("Refresh moderation", () => refreshModerationControls(true)));
@@ -801,7 +816,7 @@ function wireEvents() {
         footer: $("msgFooter").value,
       }),
     });
-    toast(`Message sent: ${result.message_id}`);
+    toast(`消息已发送，消息 ID：${result.message_id}`);
     clearMessageForm();
     renderMessagePreview();
     await loadSaved();
@@ -825,7 +840,7 @@ function wireEvents() {
         footer: $("msgFooter").value,
       }),
     });
-    toast(`Message updated: ${result.message_id}`);
+    toast(`消息已更新，消息 ID：${result.message_id}`);
     setMessageEditMode(null);
     clearMessageForm();
     renderMessagePreview();
@@ -837,7 +852,7 @@ function wireEvents() {
   $("cancelMsgEditBtn").addEventListener("click", () => {
     setMessageEditMode(null);
     renderMessagePreview();
-    toast("Message edit cancelled.");
+    toast("已取消编辑消息。");
   });
 
   $("addMapBtn").addEventListener("click", () => addRoleMapping());
@@ -870,7 +885,7 @@ function wireEvents() {
       }),
     });
     clearRoleForm();
-    toast(`Role panel posted: ${result.message_id}`);
+    toast(`身份组面板已发布，消息 ID：${result.message_id}`);
     await loadSaved();
     await loadAuditLogs();
   }));
@@ -896,7 +911,7 @@ function wireEvents() {
         mappings: state.mappings,
       }),
     });
-    toast(`Role panel updated: ${result.message_id}`);
+    toast(`身份组面板已更新，消息 ID：${result.message_id}`);
     setRoleEditMode(null);
     clearRoleForm();
     await loadSaved();
@@ -908,13 +923,13 @@ function wireEvents() {
     setRoleEditMode(null);
     state.mappings = [];
     renderMappings();
-    toast("Role panel edit cancelled.");
+    toast("已取消身份组面板编辑。");
   });
 
   $("saveApiBaseBtn").addEventListener("click", () => {
     state.apiBase = $("apiBaseInput").value.trim().replace(/\/$/, "");
     localStorage.setItem("apiBase", state.apiBase);
-    toast("API URL saved in this browser.");
+    toast("API 地址已保存在此浏览器。");
   });
 }
 

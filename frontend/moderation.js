@@ -3,11 +3,8 @@ async function loadModerationRolesAndChannels(force = false) {
   const guildId = $("modGuild").value;
   if (!guildId) return;
   setModerationStatus("Loading moderation selectors...");
-  setTicketStatus("Loading ticket selectors...");
   try {
     await fillChannelSelect("modLogChannel", guildId, "No log channel", force);
-    await fillChannelSelect("ticketChannel", guildId, "Choose ticket channel");
-    await fillChannelSelect("ticketLogChannel", guildId, "Use moderation log / choose channel");
     await fillRoleSelect("modProbationRole", guildId, "Choose role", force);
     await fillRoleSelect("modRemoveRole", guildId, "Choose role");
     await fillRoleSelect("ruleRemoveRole", guildId, "Choose role");
@@ -19,7 +16,7 @@ async function loadModerationRolesAndChannels(force = false) {
 async function refreshModerationControls(force = false) {
   await ensureGuildsLoaded(false);
   await loadModerationRolesAndChannels(force);
-  await Promise.all([loadModeration(), loadTickets()]);
+  await loadModeration();
 }
 
 async function loadModeration() {
@@ -48,12 +45,6 @@ async function loadModeration() {
 function setModerationStatus(message) {
   const list = $("modCaseList");
   if (list) list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
-}
-
-function setTicketStatus(message) {
-  const list = $("ticketList");
-  if (list) list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
-  if ($("ticketInfo")) $("ticketInfo").textContent = message;
 }
 
 function renderModerationCases(rows) {
@@ -397,5 +388,4 @@ async function updateModerationCaseStatus(caseId, status) {
   await loadModeration();
   await loadAuditLogs();
 }
-
 

@@ -1,141 +1,76 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DC-Gra-vt-bot Dashboard</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <title>DC Bot · 运行台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css?v=20261008-dashboard" />
   </head>
   <body>
-    <!-- Primary dashboard navigation with bot branding. -->
-    <aside class="sidebar">
-      <div class="brand">
-        <img src="./assets/bot-logo.jpg" alt="" />
-        <div>
-          <strong>DC Bot</strong>
-          <span>Gra-VT Ops</span>
-        </div>
-      </div>
-      <button class="nav active" data-view="overview">Overview</button>
-      <button class="nav" data-view="messages">Send Message</button>
-      <button class="nav" data-view="roles">Reaction Roles</button>
-      <button class="nav" data-view="onboarding">New Member Rules</button>
-      <button class="nav" data-view="welcome">Welcome Automation</button>
-      <button class="nav" data-view="moderation">Moderation</button>
-      <button class="nav" data-view="saved">Saved</button>
-      <button class="nav" data-view="settings">Settings</button>
-      <button id="logoutBtn" class="nav danger">Logout</button>
-    </aside>
+    <aside class="sidebar" id="sidebar"><a class="brand" href="#overview" aria-label="DC Bot 运行概览"><img src="./assets/bot-logo.jpg" alt="" /><span><strong>DC Bot</strong><small>GRA—VT 运行台</small></span></a><p class="nav-caption">运行</p><button class="nav active" data-view="overview">运行概览</button><p class="nav-caption">功能</p><button class="nav" data-view="messages">发送消息</button><button class="nav" data-view="roles">Reaction Roles</button><button class="nav" data-view="onboarding">New Member Rules</button><button class="nav" data-view="welcome">Welcome Automation</button><button class="nav" data-view="moderation">Moderation</button><button class="nav" data-view="tickets">Tickets</button><button class="nav" data-view="saved">已保存内容</button><p class="nav-caption">系统</p><button class="nav nav-error" data-view="errors">错误报告 <span id="errorBadge" class="nav-badge hidden">0</span></button><button class="nav" data-view="announcements">项目公告 <span class="nav-soon">预留</span></button><button class="nav" data-view="settings">设置</button><button id="logoutBtn" class="nav danger">退出登录</button><div class="sidebar-foot"><span class="pulse-dot"></span> 私有管理面板</div></aside>
 
     <main>
+      <button id="mobileMenuBtn" class="mobile-menu" type="button" aria-label="打开导航" aria-expanded="false">导航</button>
       <!-- Login screen keeps the bot logo visible before admin access. -->
       <section id="loginView" class="login">
         <form id="loginForm" class="panel login-panel">
           <img class="login-logo" src="./assets/bot-logo.jpg" alt="" />
           <h1>DC Bot Dashboard</h1>
-          <p class="login-copy">Announcement and role operations for your Discord community.</p>
-          <label>Username<input id="loginUser" autocomplete="username" value="admin" /></label>
-          <label>Password<input id="loginPass" type="password" autocomplete="current-password" /></label>
-          <button type="submit">Login</button>
+          <p class="login-copy">管理 Discord 社群消息、身份组与自动化功能。</p>
+          <label>用户名<input id="loginUser" autocomplete="username" value="admin" /></label>
+          <label>密码<input id="loginPass" type="password" autocomplete="current-password" /></label>
+          <button type="submit">登录</button>
           <p id="loginError" class="error"></p>
         </form>
       </section>
 
       <section id="appView" class="hidden">
-        <header>
-          <div>
-            <h1 id="viewTitle">Overview</h1>
-            <p id="viewSubtitle">Manage your Discord bot from the web.</p>
-          </div>
-          <button id="refreshBtn" class="secondary">Refresh</button>
-        </header>
+        <header class="page-header"><div><p class="eyebrow">GRA—VT / BOT OPERATIONS</p><h1 id="viewTitle">运行概览</h1><p id="viewSubtitle">过去一小时的连接状态与功能活动。</p></div><div class="header-actions"><button id="themeToggle" class="quiet-button" type="button">切换到深色</button><button id="refreshBtn" class="secondary" type="button">刷新数据</button></div></header>
         <div id="discordRateLimitBanner" class="notice hidden" role="status"></div>
 
-        <!-- Overview: bot status, quick actions, release notes, and health checks. -->
-        <section id="overview" class="view">
-          <div class="stats">
-            <article class="stat"><span>Storage</span><strong>SQLite</strong></article>
-            <article class="stat"><span>Host</span><strong>Exabytes VPS</strong></article>
-            <article class="stat"><span>Dashboard</span><strong>Public HTTPS</strong></article>
-          </div>
-          <div class="panel">
-            <h2>Bot Control</h2>
-            <div class="bot-control">
-              <div>
-                <div id="botStatusBadge" class="status-badge stopped">Stopped</div>
-                <p id="botStatusText" class="muted">Bot is not running.</p>
-              </div>
-              <div class="actions">
-                <button id="startBotBtn">Start Bot</button>
-                <button id="stopBotBtn" class="delete">End Bot</button>
-              </div>
-            </div>
-            <pre id="botLogBox" class="log-box">No bot log yet.</pre>
-          </div>
-          <div class="panel">
-            <h2>Quick Actions</h2>
-            <div class="quick-actions">
-              <button data-jump="messages">Send Message</button>
-              <button data-jump="roles" class="secondary">Create Role Panel</button>
-              <button data-jump="onboarding" class="secondary">New Member Rules</button>
-              <button data-jump="welcome" class="secondary">Welcome Automation</button>
-              <button data-jump="moderation" class="secondary">Moderation Cases</button>
-              <button data-jump="saved" class="secondary">Manage Saved</button>
-            </div>
-          </div>
-          <!-- Static release notes shown after login. -->
-          <div class="panel">
-            <h2>Latest Update</h2>
-            <div id="latestUpdateList" class="update-list"></div>
-          </div>
-          <div class="panel">
-            <h2>Recent Activity</h2>
-            <div id="recentList" class="recent-list"></div>
-          </div>
-          <div class="panel">
-            <h2>Health</h2>
-            <pre id="healthBox">Loading...</pre>
-          </div>
-        </section>
+        <section id="overview" class="view"><section class="heartbeat-hero" aria-labelledby="heartbeatTitle"><div class="hero-topline"><div><p class="eyebrow">LIVE CONNECTION / 60 MIN</p><h2 id="heartbeatTitle">稳定性心跳</h2></div><div id="botStatusBadge" class="status-badge status-unknown">等待心跳</div></div><p id="botStatusText" class="hero-status-copy">启动 bot 后，状态会在 15 秒内更新。</p><div id="heartbeatStrip" class="heartbeat-strip" role="group" aria-label="过去 60 分钟连接状态"></div><div class="timeline-labels"><time id="heartbeatStart">—</time><span>每格代表 1 分钟</span><time id="heartbeatEnd">现在</time></div><div class="heartbeat-legend"><span><i class="legend-normal"></i>正常</span><span><i class="legend-high"></i>延迟偏高</span><span><i class="legend-down"></i>断线</span><span><i class="legend-unknown"></i>无数据</span></div></section><section class="metric-line" aria-label="实时指标"><div><span>Gateway 延迟</span><strong id="metricLatency">—</strong></div><div><span>运行时长</span><strong id="metricUptime">暂无数据</strong></div><div><span>所在服务器</span><strong id="metricGuilds">—</strong></div><div><span>内存占用</span><strong id="metricMemory">—</strong></div></section><section class="feature-catalog" aria-labelledby="featureCatalogTitle"><div class="section-heading"><div><p class="eyebrow">FEATURE ACTIVITY / 24 H</p><h2 id="featureCatalogTitle">功能活动</h2></div><p>成功率按最近 24 小时操作统计。</p></div><div class="table-scroll"><table class="feature-table"><thead><tr><th>功能</th><th>触发方式</th><th>成功率</th><th>上次使用</th></tr></thead><tbody id="featureListBody"></tbody></table></div></section><details class="bot-operations"><summary>Bot 进程控制与运行日志</summary><div class="actions"><button id="startBotBtn">启动 bot</button><button id="stopBotBtn" class="danger-button">停止 bot</button></div><p id="botControlNote" class="muted">生产环境若由 systemd 管理，请在服务器操作服务。</p><pre id="botLogBox" class="log-box">暂无运行日志。</pre></details><div id="healthBox" class="hidden" aria-hidden="true"></div><div id="latestUpdateList" class="hidden" aria-hidden="true"></div><div id="recentList" class="hidden" aria-hidden="true"></div><span id="unresolvedErrorCount" class="hidden">0</span></section>
 
         <!-- Send Message: compose announcements, insert mentions, and preview payloads. -->
         <section id="messages" class="view hidden">
           <div class="panel">
-            <h2>Send Message</h2>
+            <h2>发送消息</h2>
             <div class="grid two">
-              <label>Server<select id="msgGuild"></select></label>
-              <label>Channel<select id="msgChannel"></select></label>
+              <label>服务器<select id="msgGuild"></select></label>
+              <label>频道<select id="msgChannel"></select></label>
             </div>
-            <label class="check"><input id="msgEmbed" type="checkbox" checked /> Send as embed</label>
+            <label class="check"><input id="msgEmbed" type="checkbox" checked /> 以 Embed 发送</label>
             <div class="grid three embed-fields">
-              <label>Title<input id="msgTitle" placeholder="Announcement" /></label>
-              <label>Color<select id="msgColor"></select></label>
-              <label>Footer<input id="msgFooter" placeholder="Optional footer" /></label>
+              <label>标题<input id="msgTitle" placeholder="公告标题" /></label>
+              <label>颜色<select id="msgColor"></select></label>
+              <label>页脚<input id="msgFooter" placeholder="可选页脚" /></label>
             </div>
             <!-- Searchable mention dropdowns insert Discord mention tokens into the message editor. -->
             <div class="mention-tools">
               <div class="mention-tool dropdown">
-                <label>Mention Role<input id="mentionRoleSearch" placeholder="Search role name" /></label>
+                <label>提及身份组<input id="mentionRoleSearch" placeholder="搜索身份组名称" /></label>
                 <div id="mentionRoleResults" class="mention-results dropdown-menu"></div>
               </div>
               <div class="mention-tool dropdown">
-                <label>Mention Member<input id="mentionMemberSearch" placeholder="Search member name" /></label>
+                <label>提及成员<input id="mentionMemberSearch" placeholder="搜索成员名称" /></label>
                 <div id="mentionMemberResults" class="mention-results dropdown-menu"></div>
               </div>
               <div class="mention-tool dropdown">
-                <label>Mention Channel<input id="mentionChannelSearch" placeholder="Search channel name" /></label>
+                <label>提及频道<input id="mentionChannelSearch" placeholder="搜索频道名称" /></label>
                 <div id="mentionChannelResults" class="mention-results dropdown-menu"></div>
               </div>
             </div>
-            <label>Description / Message<textarea id="msgContent" rows="8" placeholder="# H1 works in normal Discord messages. Embed descriptions support Discord markdown, mentions, and emoji."></textarea></label>
+            <label>内容<textarea id="msgContent" rows="8" placeholder="支持 Discord Markdown、提及和 emoji。"></textarea></label>
             <div class="preview-box">
-              <div class="preview-label">Preview</div>
+              <div class="preview-label">实时预览</div>
               <div id="msgPreview" class="discord-preview"></div>
             </div>
             <div class="actions">
-              <button id="sendMsgBtn">Send Message</button>
-              <button id="updateMsgBtn" class="secondary hidden">Update Saved Message</button>
-              <button id="cancelMsgEditBtn" class="secondary hidden">Cancel Edit</button>
+              <button id="sendMsgBtn">发送到频道</button>
+              <button id="updateMsgBtn" class="secondary hidden">更新已保存消息</button>
+              <button id="cancelMsgEditBtn" class="secondary hidden">取消编辑</button>
             </div>
           </div>
         </section>
@@ -351,66 +286,72 @@
             </div>
             <div id="modCaseList" class="audit-list"></div>
           </div>
-          <div class="panel">
-            <h2>Ticket Intake</h2>
+        </section>
+
+        <section id="tickets" class="view hidden"><div class="section-intro"><p class="eyebrow">PRIVATE SUPPORT FLOW</p><h2>Tickets</h2><p>设置 Discord 工单入口，并查看成员提交的记录。</p></div><div class="grid one"><label>服务器<select id="ticketGuild"></select></label></div><div class="panel">
+            <h2>工单面板设置</h2>
             <div class="grid three">
-              <label>Ticket Channel<select id="ticketChannel"></select></label>
-              <label>Staff Log Channel<select id="ticketLogChannel"></select></label>
-              <label>Panel Color<select id="ticketPanelColor"></select></label>
-              <label>Panel Title<input id="ticketPanelTitle" placeholder="Need help?" /></label>
-              <label>Button Label<input id="ticketButtonLabel" placeholder="Open Ticket" /></label>
+              <label>工单频道<select id="ticketChannel"></select></label>
+              <label>员工日志频道<select id="ticketLogChannel"></select></label>
+              <label>面板颜色<select id="ticketPanelColor"></select></label>
+              <label>面板标题<input id="ticketPanelTitle" placeholder="需要帮助吗？" /></label>
+              <label>按钮文字<input id="ticketButtonLabel" placeholder="打开工单" /></label>
             </div>
-            <label>Panel Description<textarea id="ticketPanelDescription" rows="3" placeholder="Explain what this ticket button is for."></textarea></label>
-            <p id="ticketInfo" class="muted">Publish a public ticket entry. Ticket content is only sent to staff log and dashboard.</p>
+            <label>面板说明<textarea id="ticketPanelDescription" rows="3" placeholder="说明成员可以通过此按钮提交什么请求。"></textarea></label>
+            <p id="ticketInfo" class="muted">发布工单入口；工单内容仅发送给员工日志并显示在 Dashboard。</p>
             <div class="actions">
-              <button id="saveTicketSettingsBtn" class="secondary">Save Ticket Settings</button>
-              <button id="publishTicketPanelBtn">Publish Ticket Panel</button>
-              <button id="refreshTicketsBtn" class="secondary">Refresh Tickets</button>
+              <button id="saveTicketSettingsBtn" class="secondary">保存工单设置</button>
+              <button id="publishTicketPanelBtn">发布工单面板</button>
+              <button id="refreshTicketsBtn" class="secondary">刷新工单</button>
             </div>
           </div>
           <div class="panel">
-            <h2>Tickets</h2>
+            <h2>工单记录</h2>
             <div class="actions view-tabs">
-              <button id="ticketActiveTab">Active <span id="ticketActiveCount">0</span></button>
-              <button id="ticketArchiveTab" class="secondary">Archive <span id="ticketArchiveCount">0</span></button>
+              <button id="ticketActiveTab">处理中 <span id="ticketActiveCount">0</span></button>
+              <button id="ticketArchiveTab" class="secondary">已归档 <span id="ticketArchiveCount">0</span></button>
             </div>
             <div id="ticketList" class="audit-list"></div>
           </div>
-        </section>
+</section>
 
         <!-- Saved: review previously sent messages, role panels, and admin activity. -->
         <section id="saved" class="view hidden">
           <div class="panel">
-            <h2>Saved Messages & Panels</h2>
+            <h2>已保存的消息与面板</h2>
             <div id="savedList" class="saved-list"></div>
           </div>
           <div class="panel">
-            <h2>Activity Log</h2>
+            <h2>操作记录</h2>
             <div id="auditList" class="audit-list"></div>
           </div>
         </section>
 
+        <section id="errors" class="view hidden"><div class="section-intro"><p class="eyebrow">INCIDENT TRIAGE</p><h2>错误报告</h2><p>检查失败操作与运行警告，展开记录查看 traceback 和处理建议。</p></div><div class="error-toolbar"><label>级别<select id="errorLevelFilter"><option value="">全部级别</option><option value="ERROR">ERROR</option><option value="WARN">WARN</option></select></label><label>处理状态<select id="errorStatusFilter"><option value="open">未处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option><option value="">全部状态</option></select></label><button id="refreshErrorsBtn" class="secondary">刷新错误列表</button></div><div class="error-list-head"><span>时间</span><span>级别</span><span>功能</span><span>触发指令</span><span>错误信息</span><span>状态</span></div><div id="errorList" class="error-list" aria-live="polite"></div><button id="loadMoreErrorsBtn" class="secondary hidden">加载更多记录</button></section>
+        <section id="announcements" class="view hidden"><div class="section-intro"><p class="eyebrow">PROJECT INTAKE / RESERVED</p><h2>项目公告</h2><p>此入口为未来的项目抓取、人工校对和公告发布流程预留。</p></div><div class="reserved-note"><span class="pulse-dot"></span><div><strong>尚未接入</strong><p>当前不会抓取 gra-vt.my，也不会自动发布 Discord 消息。</p></div></div></section>
+
         <!-- Settings: browser-local dashboard API URL configuration. -->
         <section id="settings" class="view hidden">
           <div class="panel">
-            <h2>Settings</h2>
+            <h2>Dashboard 设置</h2>
             <label>API Base URL<input id="apiBaseInput" placeholder="https://api.example.com" /></label>
-            <button id="saveApiBaseBtn" class="secondary">Save API URL</button>
-            <p class="muted">Static hosting needs this to point to the public dashboard API, for example your Exabytes VPS domain.</p>
+            <button id="saveApiBaseBtn" class="secondary">保存 API 地址</button>
+            <p class="muted">如果前端使用静态托管，请在此填写 Dashboard API 的访问地址。</p>
           </div>
         </section>
       </section>
     </main>
 
-    <div id="toast" class="toast hidden"></div>
-    <script src="./config.js?v=20260714-error-prevention"></script>
-    <script src="./onboarding.js?v=20261007"></script>
-    <script src="./welcome.js?v=20261007"></script>
-    <script src="./moderation.js?v=20261007"></script>
-    <script src="./tickets.js?v=20261007"></script>
-    <script src="./message_composer.js?v=20261007"></script>
-    <script src="./saved_items.js?v=20261007"></script>
-    <script src="./role_panels.js?v=20261007"></script>
-    <script src="./app.js?v=20261007"></script>
+    <script src="./config.js?v=20261008-dashboard"></script>
+    <script src="./onboarding.js?v=20261008-dashboard"></script>
+    <script src="./welcome.js?v=20261008-dashboard"></script>
+    <script src="./moderation.js?v=20261008-dashboard"></script>
+    <script src="./tickets.js?v=20261008-dashboard"></script>
+    <script src="./message_composer.js?v=20261008-dashboard"></script>
+    <script src="./saved_items.js?v=20261008-dashboard"></script>
+    <script src="./role_panels.js?v=20261008-dashboard"></script>
+    <script src="./observability.js?v=20261008-dashboard"></script>
+    <script src="./app.js?v=20261008-dashboard"></script>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </body>
 </html>

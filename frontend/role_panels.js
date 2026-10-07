@@ -65,6 +65,12 @@ function renderRolePreview() {
   box.innerHTML = `<div class="plain-preview">${renderDiscordText(title ? `# ${title}\n${body}` : body, guildId)}</div>${control}`;
 }
 
+async function loadRolePanelPage() {
+  if (!state.guilds.length) await ensureGuildsLoaded();
+  fillGuildSelectors();
+  renderRolePreview();
+}
+
 
 function selectedRole() {
   const guildId = $("rrGuild").value;
@@ -98,5 +104,4 @@ async function addRoleMapping() {
   renderMappings();
   toast(`Added ${emoji} → ${role.name}`);
 }
-
 

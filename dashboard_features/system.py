@@ -6,16 +6,9 @@ router = APIRouter()
 
 @router.get("/api/health")
 def health():
-    return {
-        "ok": True,
-        "storage": storage_name(),
-        "bot": bot_status_payload(),
-        "discord": discord_guard.status(),
-        "rate_limits": {
-            "dashboard_rejected": DASHBOARD_LIMITER.rejected,
-            **RATE_COORDINATOR.status(),
-        },
-    }
+    # Public liveness probe. Detailed bot status is available only through the
+    # authenticated observability endpoint.
+    return {"ok": True}
 
 
 @router.get("/api/bot/status", dependencies=[Depends(require_admin)])
@@ -53,6 +46,5 @@ def logout(request: Request):
 @router.get("/api/me")
 def me(request: Request):
     return {"logged_in": is_admin_request(request)}
-
 
 

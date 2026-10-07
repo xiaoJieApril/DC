@@ -1,3 +1,4 @@
+import asyncio
 import os
 import secrets
 import hmac
@@ -57,6 +58,7 @@ from welcome_automation import (
     normalize_welcome_config,
     validate_welcome_config,
 )
+from observability import observability
 
 
 load_dotenv()
@@ -353,6 +355,71 @@ async def dashboard_request_protection(request: Request, call_next):
         raise
 
 
+def observability_feature_for_path(path):
+    if path.startswith("/api/messages"):
+        return "messages"
+    if path.startswith("/api/discord/commands/sendmessage"):
+        return "messages"
+    if path.startswith("/api/discord/commands/reactionrole"):
+        return "roles"
+    if path.startswith("/api/discord/commands/giverole") or path.startswith("/api/discord/commands/removerole"):
+        return "roles"
+    if path.startswith("/api/reaction-roles"):
+        return "roles"
+    if path.startswith("/api/onboarding"):
+        return "onboarding"
+    if path.startswith("/api/welcome-automation"):
+        return "welcome"
+    if path.startswith("/api/moderation"):
+        return "moderation"
+    if path.startswith("/api/tickets"):
+        return "tickets"
+    if path.startswith("/api/saved"):
+        return "messages"
+    if path.startswith("/api/bot/start") or path.startswith("/api/bot/stop"):
+        return "system"
+    return ""
+
+
+@app.middleware("http")
+async def dashboard_observability(request: Request, call_next):
+    path = request.url.path
+    method = request.method.upper()
+    feature = observability_feature_for_path(path)
+    if not feature or method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        await asyncio.to_thread(
+            observability.record_feature, feature, f"{method} {path}", False
+        )
+        await asyncio.to_thread(
+            observability.record_error,
+            "ERROR",
+            feature,
+            f"{method} {path}",
+            exc,
+        )
+        raise
+    if response.headers.get("X-Idempotent-Replay") != "true" and response.status_code not in {401, 403, 429}:
+        await asyncio.to_thread(
+            observability.record_feature,
+            feature,
+            f"{method} {path}",
+            response.status_code < 400,
+        )
+    if response.status_code >= 500:
+        await asyncio.to_thread(
+            observability.record_error,
+            "ERROR",
+            feature,
+            f"{method} {path}",
+            message=f"Dashboard API returned HTTP {response.status_code} for {method} {path}",
+        )
+    return response
+
+
 class LoginPayload(BaseModel):
     username: str
     password: str
@@ -493,6 +560,10 @@ class TicketSettingsPayload(BaseModel):
 class TicketStatusPayload(BaseModel):
     status: str = "resolved"
     notes: str = ""
+
+
+class ErrorStatusPayload(BaseModel):
+    status: str
 
 
 def bot_returncode():
@@ -1192,6 +1263,7 @@ from dashboard_features import (
     messages as message_routes,
     moderation as moderation_routes,
     onboarding as onboarding_routes,
+    observability as observability_routes,
     role_panels as role_panel_routes,
     saved_items as saved_item_routes,
     system as system_routes,
@@ -1201,6 +1273,7 @@ from dashboard_features import (
 
 _DASHBOARD_FEATURES = (
     system_routes,
+    observability_routes,
     discord_routes,
     saved_item_routes,
     onboarding_routes,

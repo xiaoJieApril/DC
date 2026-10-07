@@ -227,4 +227,9 @@ function renderMessagePreview() {
   box.innerHTML = `<div class="plain-preview">${renderDiscordText(content)}</div>`;
 }
 
+async function loadMessagePage() {
+  if (!state.guilds.length) await ensureGuildsLoaded();
+  fillGuildSelectors();
+  renderMessagePreview();
+}
 

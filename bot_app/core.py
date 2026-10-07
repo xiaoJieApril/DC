@@ -36,6 +36,7 @@ from welcome_automation import (
     render_welcome_template,
 )
 from request_limits import SharedRateCoordinator
+from observability import ObservabilityLogHandler, feature_for_trigger, observability
 
 load_dotenv()
 init_db()
@@ -55,7 +56,10 @@ if not logger.handlers:
     stream_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
+if not any(isinstance(handler, ObservabilityLogHandler) for handler in logger.handlers):
+    logger.addHandler(ObservabilityLogHandler(observability))
 RATE_COORDINATOR = SharedRateCoordinator(BASE_DIR / "data" / "request_limits.sqlite3")
+BOT_STARTED_AT = time.time()
 BOT_ACTION_INFLIGHT = set()
 BOT_ACTION_LOCK = asyncio.Lock()
 MEMBER_FETCHES = {}
@@ -652,6 +656,11 @@ class TicketModal(discord.ui.Modal):
             append_ticket(self.guild_id, ticket)
             await send_ticket_log(interaction.guild, ticket, settings.get("log_channel_id"))
             await interaction.followup.send(f"Ticket **{ticket['ticket_id']}** submitted. Staff can review it now.", ephemeral=True)
+            await asyncio.to_thread(observability.record_feature, "tickets", "ticket_modal_submit", True)
+        except Exception as exc:
+            logger.exception("Ticket submission failed", extra={"feature": "tickets", "command": "ticket_modal_submit"})
+            await asyncio.to_thread(observability.record_feature, "tickets", "ticket_modal_submit", False)
+            raise
         finally:
             await finish_bot_action(action_key)
 
@@ -925,13 +934,30 @@ reactionrole = bot.create_group("reactionrole", "Manage reaction role messages")
 
 @bot.event
 async def on_application_command_error(ctx, error):
+    trigger = getattr(getattr(ctx, "command", None), "qualified_name", "") or "unknown command"
+    feature = feature_for_trigger(trigger)
+    await asyncio.to_thread(observability.record_feature, feature, f"/{trigger}", False)
     if isinstance(error, commands.MissingPermissions):
         await ctx.respond("You do not have permission to use this command.", ephemeral=True)
         return
     if isinstance(error, commands.BotMissingPermissions):
+        logger.warning("Bot is missing permissions for /%s", trigger, extra={"feature": feature, "command": f"/{trigger}"})
         await ctx.respond("I am missing permissions needed for that command.", ephemeral=True)
         return
+    logger.error(
+        "Application command /%s failed: %s",
+        trigger,
+        error,
+        exc_info=(type(error), error, error.__traceback__),
+        extra={"feature": feature, "command": f"/{trigger}"},
+    )
     raise error
+
+
+@bot.event
+async def on_application_command_completion(ctx):
+    trigger = getattr(getattr(ctx, "command", None), "qualified_name", "") or "unknown command"
+    await asyncio.to_thread(observability.record_feature, feature_for_trigger(trigger), f"/{trigger}", True)
 
 
 if __name__ == "__main__":

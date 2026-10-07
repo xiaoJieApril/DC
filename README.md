@@ -70,6 +70,8 @@ SYSTEMD_BOT_SERVICE=dc-gra-vt-bot
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
+Dashboard 登录使用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和 `SESSION_SECRET`。Bot 与 FastAPI 分开运行，但共享项目目录下的 `data/observability.sqlite3`：bot 每 15 秒写入 Gateway 心跳，指令和交互写入功能结果，错误通过后台日志队列记录；FastAPI 提供受登录保护的摘要、错误筛选和状态更新 API。首次启动时历史时间线与功能统计会显示“暂无记录”，数据从启动后开始积累。公开的 `/api/health` 只返回最小存活状态。
+
 安裝 dependencies：
 
 ```bash
@@ -185,7 +187,7 @@ Dashboard 在 Discord 限流或暫時離線時，會使用持久化的 guild/cha
 
 Dashboard 會在送出前檢查必填欄位、Discord IDs、Rule 條件及 Message Link，並阻止相同操作重複送出。若 Discord 暫時不可用且沒有提供 retry 時間，前端會套用 60 秒保護期；這能避免多數可預防的 400／503，但 Discord 權限錯誤、外部服務中斷等真實失敗仍會明確顯示。
 
-Bot 與 Dashboard 會透過 `data/request_limits.sqlite3` 共用短期 Discord 請求安全預算；Dashboard 另外依 login、本地讀寫及 Discord 讀寫分層限流。預設為平衡模式，所有數值都可在 `.env.example` 所列的 `DISCORD_*`、`DASHBOARD_*_LIMIT_*` 變數調整。`/api/health` 的 `discord` 與 `rate_limits` 欄位可用來確認 bucket 冷卻、無效請求、合併及拒絕次數。
+Bot 與 Dashboard 會透過 `data/request_limits.sqlite3` 共用短期 Discord 請求安全預算；Dashboard 另外依 login、本地讀寫及 Discord 讀寫分層限流。預設為平衡模式，所有數值都可在 `.env.example` 所列的 `DISCORD_*`、`DASHBOARD_*_LIMIT_*` 變數調整。公開 `/api/health` 只回傳 `{ "ok": true }`；詳細運行狀態只會由已登入的 Dashboard 讀取。
 
 Moderation Rules 可設定規則編號、原因、嚴重度及預設處置。Dashboard 可貼上 Discord Message Link 自動取得作者與證據；Discord 管理員也可右鍵訊息使用 **Apps → Create Moderation Case**，選 Rule 並確認後建立案件。Resolved／Rejected／Accepted 案件會顯示於 Archive，並可 Reopen。
 
@@ -201,4 +203,3 @@ STORAGE_BACKEND=json
 - 正式 VPS 請設定 `BOT_CONTROL_MODE=systemd`，避免 dashboard UI 重複啟動 bot。
 - `trycloudflare.com` Quick Tunnel 只適合臨時測試。沒有 domain 時，正式入口請用 Lightsail Static IP。
 - Discord Developer Portal 需要開啟 Server Members Intent，New Member Rules、Welcome Automation 和 member role 發放才會穩定運作。
-

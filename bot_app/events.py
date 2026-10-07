@@ -1,5 +1,39 @@
 """Bot lifecycle and Discord event handlers."""
+import asyncio
+import logging
+import os
+import time
+
 from .core import *
+from observability import feature_for_trigger, observability
+
+
+def process_memory_mb():
+    try:
+        import psutil
+
+        return round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
+    except (ImportError, OSError):
+        return None
+
+
+@tasks.loop(seconds=15)
+async def bot_heartbeat_worker():
+    latency = getattr(bot, "latency", None)
+    latency_ms = round(float(latency) * 1000, 1) if latency is not None and latency == latency else None
+    await asyncio.to_thread(
+        observability.record_heartbeat,
+        bot.is_ready(),
+        latency_ms,
+        len(bot.guilds),
+        max(0, time.time() - BOT_STARTED_AT),
+        process_memory_mb(),
+    )
+
+
+@bot_heartbeat_worker.before_loop
+async def before_bot_heartbeat_worker():
+    await bot.wait_until_ready()
 
 def welcome_allowed_mentions(member):
     return discord.AllowedMentions(everyone=False, roles=False, users=[member], replied_user=False)
@@ -127,12 +161,15 @@ async def on_member_join(member: discord.Member):
         except (discord.Forbidden, discord.HTTPException) as exc:
             print(f"[WELCOME] Could not welcome {member.id}: {exc}")
             log_welcome_result("welcome_failed", guild_id=member.guild.id, user_id=member.id, detail=exc)
+            await asyncio.to_thread(observability.record_feature, "welcome", "member_join", False)
         else:
             log_welcome_result("welcome_sent", guild_id=member.guild.id, user_id=member.id)
+            await asyncio.to_thread(observability.record_feature, "welcome", "member_join", True)
     else:
         log_welcome_result(
             "welcome_failed", guild_id=member.guild.id, user_id=member.id, detail="Welcome channel or message unavailable"
         )
+        await asyncio.to_thread(observability.record_feature, "welcome", "member_join", False)
 
     if welcome.get("follow_up_enabled") and welcome.get("follow_up_content", "").strip():
         joined_at = time.time()
@@ -159,7 +196,30 @@ async def on_ready():
     print("[RR] Dropdown role panels are handled by live interaction routing")
     if not welcome_follow_up_worker.is_running():
         welcome_follow_up_worker.start()
+    if not bot_heartbeat_worker.is_running():
+        bot_heartbeat_worker.start()
     print("[WELCOME] Follow-up worker is running")
+
+
+@bot.event
+async def on_disconnect():
+    await asyncio.to_thread(
+        observability.record_heartbeat,
+        False,
+        None,
+        len(bot.guilds),
+        max(0, time.time() - BOT_STARTED_AT),
+        process_memory_mb(),
+    )
+
+
+@bot.event
+async def on_error(event_method, *args, **kwargs):
+    logger.exception(
+        "Unhandled Discord event failure in %s",
+        event_method,
+        extra={"feature": feature_for_trigger(event_method), "command": event_method},
+    )
 
 
 @bot.event
@@ -172,6 +232,8 @@ async def on_interaction(interaction: discord.Interaction):
     if not (is_role_interaction or is_onboarding_interaction or is_ticket_interaction):
         return
 
+    feature = feature_for_trigger(custom_id)
+    succeeded = False
     action_key = None
     try:
         if not interaction.guild:
@@ -184,6 +246,7 @@ async def on_interaction(interaction: discord.Interaction):
                 await interaction.response.send_message("This ticket panel belongs to another server.", ephemeral=True)
                 return
             await interaction.response.send_modal(TicketModal(guild_id))
+            succeeded = True
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -209,6 +272,7 @@ async def on_interaction(interaction: discord.Interaction):
                 await interaction.followup.send("Choose exactly one language.", ephemeral=True)
                 return
             await send_onboarding_rules(interaction, entry, language)
+            succeeded = True
             return
 
         if custom_id.startswith("onboarding_agree:"):
@@ -220,6 +284,7 @@ async def on_interaction(interaction: discord.Interaction):
                 return
             result = await apply_onboarding_agreement(interaction, entry, language)
             await interaction.followup.send(result, ephemeral=True)
+            succeeded = True
             return
 
         if custom_id.startswith("role_button:"):
@@ -229,6 +294,7 @@ async def on_interaction(interaction: discord.Interaction):
                 return
             result = await apply_role_button(interaction, role_id)
             await interaction.followup.send(result, ephemeral=True)
+            succeeded = True
             return
 
         _, entry = find_select_entry(config, interaction.guild.id, custom_id)
@@ -244,7 +310,7 @@ async def on_interaction(interaction: discord.Interaction):
         result = await apply_role_selection(interaction, entry, values)
         await interaction.followup.send(result, ephemeral=True)
     except Exception as exc:
-        logger.exception("[INTERACTION] Component interaction failed")
+        logger.exception("[INTERACTION] Component interaction failed", extra={"feature": feature, "command": custom_id})
         try:
             if interaction.response.is_done():
                 await interaction.followup.send("This action could not be completed right now. Please try again later.", ephemeral=True)
@@ -254,6 +320,7 @@ async def on_interaction(interaction: discord.Interaction):
             logger.exception("[INTERACTION] Could not report interaction failure")
     finally:
         await finish_bot_action(action_key)
+        await asyncio.to_thread(observability.record_feature, feature, custom_id, succeeded)
 
 async def queue_reaction_change(payload, should_have):
     if not payload.guild_id or payload.user_id == bot.user.id:
