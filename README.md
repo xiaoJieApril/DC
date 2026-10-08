@@ -75,7 +75,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Dashboard 登录使用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和 `SESSION_SECRET`。Bot 与 FastAPI 分开运行，但共享项目目录下的 `data/observability.sqlite3`：bot 每 15 秒写入 Gateway 心跳，指令和交互写入功能结果，错误通过后台日志队列记录；FastAPI 提供受登录保护的摘要、错误筛选和状态更新 API。首次启动时历史时间线与功能统计会显示“暂无记录”，数据从启动后开始积累。公开的 `/api/health` 只返回最小存活状态。
 
-Dashboard 的“项目公告”页由管理员手动抓取 `https://gra-vt.my/projects`，只读取新的项目详情并保存到 `data/projects.sqlite3`。抓取重点为活动名称、时间、图片、画师、募资目标、最低捐款和捐款链接；页面未提供的资料会留空，供管理员补充。可以在 Dashboard「设置 → 项目公告 AI 总结」配置兼容 OpenAI Chat Completions 的 API Base URL、模型和 API Key。AI 默认关闭；开启后新抓取会整理项目字段，也可在单个草稿中手动触发总结。API Key 只保存在服务器 `.env`，不会发送回浏览器。校对 Embed 草稿并为各服务器保存公告频道后，可分别发布到对应服务器；已发布记录按项目和服务器防止重复发送。抓取器只跟随 `gra-vt.my` 站内项目链接，不会定期抓取或自动发布。AI 请求可能产生服务商费用。
+Dashboard 的“项目公告”页由管理员手动检查 `https://gra-vt.my/projects`。选择更新弹窗会列出项目，新项目默认勾选、已收录项目默认不勾选；只有选中的详情会重新抓取和更新。草稿可编辑或删除；已有 Discord 发布记录的项目不能删除。抓取重点为活动名称、时间、图片、画师、募资目标、最低捐款和捐款链接；页面未提供的资料会留空，供管理员补充。可以在 Dashboard「设置 → 项目公告 AI 总结」配置兼容 OpenAI Chat Completions 的 API Base URL、模型和 API Key。AI 默认关闭；开启后新抓取会整理项目字段，也可在单个草稿中手动触发总结。API Key 只保存在服务器 `.env`，不会发送回浏览器。校对 Embed 草稿并为各服务器保存公告频道后，可分别发布到对应服务器；已发布记录按项目和服务器防止重复发送。抓取器只跟随 `gra-vt.my` 站内项目链接，不会定期抓取或自动发布。AI 请求可能产生服务商费用。
 
 安裝 dependencies：
 

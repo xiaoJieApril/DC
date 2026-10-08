@@ -330,7 +330,7 @@
         <section id="errors" class="view hidden"><div class="section-intro"><p class="eyebrow">INCIDENT TRIAGE</p><h2>错误报告</h2><p>检查失败操作与运行警告，展开记录查看 traceback 和处理建议。</p></div><div class="error-toolbar"><label>级别<select id="errorLevelFilter"><option value="">全部级别</option><option value="ERROR">ERROR</option><option value="WARN">WARN</option></select></label><label>处理状态<select id="errorStatusFilter"><option value="open">未处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option><option value="">全部状态</option></select></label><button id="refreshErrorsBtn" class="secondary">刷新错误列表</button></div><div class="error-list-head"><span>时间</span><span>级别</span><span>功能</span><span>触发指令</span><span>错误信息</span><span>状态</span></div><div id="errorList" class="error-list" aria-live="polite"></div><button id="loadMoreErrorsBtn" class="secondary hidden">加载更多记录</button></section>
         <section id="announcements" class="view hidden">
           <div class="section-intro"><p class="eyebrow">GRA-VT / PROJECT INTAKE</p><h2>项目公告</h2><p>手动发现新项目，校对公告内容，再发送到所选服务器。</p></div>
-          <div class="project-scrape-bar"><div><strong id="projectScrapeStatus">尚未抓取</strong><p id="projectScrapeMeta">抓取活动名称、时间、图片、画师、募资目标、最低捐款和捐款链接。可在设置中开启 AI 整理。</p></div><button id="scrapeProjectsBtn">立即抓取</button></div>
+          <div class="project-scrape-bar"><div><strong id="projectScrapeStatus">尚未抓取</strong><p id="projectScrapeMeta">抓取活动名称、时间、图片、画师、募资目标、最低捐款和捐款链接。可选择要重新更新的项目。</p></div><button id="scrapeProjectsBtn">检查与选择更新</button></div>
           <div class="project-toolbar"><label>Discord 服务器<select id="projectGuild"></select></label><label>公告频道<select id="projectChannel"></select></label><button id="saveProjectChannelBtn" class="secondary">保存公告频道</button></div>
           <div class="project-layout">
             <div><h3 class="project-list-title">项目草稿 <span id="projectCount" class="muted"></span></h3><div id="projectList" class="project-list" aria-live="polite"></div></div>
@@ -344,10 +344,19 @@
               <div class="grid two"><label>最低捐款<input id="projectDraftMinimumDonation" maxlength="120" placeholder="例如 RM30" /></label><label>捐款链接<input id="projectDraftDonationUrl" type="url" placeholder="https://..." /></label></div>
               <label>项目来源链接<input id="projectDraftSource" type="url" placeholder="https://gra-vt.my/projects/..." /></label>
               <div class="project-preview-wrap"><h4>Discord Embed 预览</h4><div id="projectPreview" class="discord-message-surface"></div></div>
-              <div class="actions"><button type="button" id="summarizeProjectBtn" class="secondary">用 AI 整理</button><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button></div>
+              <div class="actions"><button type="button" id="summarizeProjectBtn" class="secondary">用 AI 整理</button><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="deleteProjectDraftBtn" class="delete">删除草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button></div>
               <p id="projectActionInfo" class="muted" aria-live="polite"></p>
             </form>
           </div>
+          <dialog id="projectRefreshDialog" class="project-refresh-dialog">
+            <form method="dialog" class="project-refresh-shell">
+              <div class="project-editor-heading"><div><p class="eyebrow">SELECT PROJECTS</p><h3>选择要更新的项目</h3></div><button type="button" class="secondary project-dialog-close" id="closeProjectRefreshBtn" aria-label="关闭">×</button></div>
+              <p class="muted">新发现的项目默认选中；已收录项目默认不选。只有勾选的项目会重新读取并更新资料。</p>
+              <div class="actions project-selection-actions"><button type="button" class="secondary" id="selectNewProjectsBtn">只选新项目</button><button type="button" class="secondary" id="selectAllProjectsBtn">全选</button><button type="button" class="secondary" id="selectNoProjectsBtn">全不选</button></div>
+              <div id="projectRefreshList" class="project-refresh-list" aria-live="polite"></div>
+              <div class="actions project-dialog-footer"><button type="button" class="secondary" id="cancelProjectRefreshBtn">取消</button><button type="button" id="confirmProjectRefreshBtn">更新选中的项目</button></div>
+            </form>
+          </dialog>
         </section>
 
         <!-- Settings: browser-local dashboard API URL configuration. -->
@@ -380,7 +389,7 @@
     <script src="./saved_items.js?v=20261008-dashboard-2"></script>
     <script src="./role_panels.js?v=20261008-dashboard-2"></script>
     <script src="./observability.js?v=20261008-dashboard-2"></script>
-    <script src="./project_announcements.js?v=20261008-projects-2"></script>
+    <script src="./project_announcements.js?v=20261008-projects-3"></script>
     <script src="./app.js?v=20261008-dashboard-4"></script>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </body>

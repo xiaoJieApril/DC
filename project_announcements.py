@@ -394,7 +394,7 @@ def list_projects():
         projects = [_row(r) for r in db.execute("SELECT * FROM projects ORDER BY first_seen_at DESC, id DESC")]
         settings = {r["guild_id"]: r["channel_id"] for r in db.execute("SELECT guild_id, channel_id FROM project_announcement_settings")}
         run = db.execute("SELECT * FROM project_scrape_runs ORDER BY id DESC LIMIT 1").fetchone()
-        publication_rows = db.execute("SELECT project_id,guild_id,channel_id,discord_message_id,status,published_at FROM project_publications WHERE status='published'").fetchall()
+        publication_rows = db.execute("SELECT project_id,guild_id,channel_id,discord_message_id,status,published_at FROM project_publications WHERE status IN ('published','publishing')").fetchall()
     publications = {}
     for row in publication_rows:
         publications.setdefault(str(row["project_id"]), []).append(dict(row))
@@ -406,31 +406,61 @@ def list_projects():
     return {"projects": projects, "channels": settings, "last_run": _row(run)}
 
 
-def scrape_new_projects():
+def _discover_project_sources():
+    listing_html = _fetch_html(PROJECTS_URL)
+    listing = _PageParser()
+    listing.feed(listing_html)
+    bundle_source = ""
+    if listing.cards:
+        discovered = [{"url": url, "title": "", "description": "", "event_date": "", "image_url": ""}
+                      for url in dict.fromkeys(filter(None, (_safe_project_url(href) for href, _ in listing.cards)))]
+    else:
+        module_script = re.search(
+            r'<script\b(?=[^>]*\btype=["\']module["\'])(?=[^>]*\bsrc=["\']([^"\']+)["\'])[^>]*>',
+            listing_html, re.I,
+        )
+        if not module_script:
+            raise ValueError("项目页没有卡片 HTML，也没有可读取的 module script。")
+        bundle_source = _fetch_html(urljoin(PROJECTS_URL, module_script.group(1)))
+        discovered = _bundle_projects(bundle_source)
+    return discovered, bundle_source if not listing.cards else ""
+
+
+def discover_projects():
+    """Read the current project index without changing stored project details."""
+    discovered, _bundle_source = _discover_project_sources()
+    known = {row["url"]: row for row in list_projects()["projects"]}
+    for item in discovered:
+        previous = known.get(item["url"])
+        item["known"] = bool(previous)
+        item["id"] = previous["id"] if previous else None
+        item["current_title"] = (previous.get("draft_title") or previous.get("title") or "") if previous else ""
+        item["current_date"] = (previous.get("draft_date") or previous.get("event_date") or "") if previous else ""
+        item["last_fetched_at"] = previous.get("fetched_at", "") if previous else ""
+        item["status"] = previous.get("status", "") if previous else "new"
+    return [{key: item.get(key, "") for key in (
+        "url", "title", "event_date", "known", "id", "current_title", "current_date", "last_fetched_at", "status",
+    )} for item in discovered]
+
+
+def scrape_new_projects(refresh_ids=None, new_urls=None):
     if not _FETCH_LOCK.acquire(blocking=False):
         raise RuntimeError("抓取任务正在运行，请稍后再试。")
     started = _now()
     found = added = failed = 0
     run_error = ""
     try:
-        listing_html = _fetch_html(PROJECTS_URL)
-        listing = _PageParser()
-        listing.feed(listing_html)
-        bundle = ""
-        if listing.cards:
-            discovered = [{"url": url, "title": "", "description": "", "event_date": "", "image_url": ""}
-                          for url in dict.fromkeys(filter(None, (_safe_project_url(href) for href, _ in listing.cards)))]
-        else:
-            # Gra-VT is a client-rendered SPA: the web server serves an empty
-            # #root shell, while the card data lives in its same-origin Vite bundle.
-            module_script = re.search(
-                r'<script\b(?=[^>]*\btype=["\']module["\'])(?=[^>]*\bsrc=["\']([^"\']+)["\'])[^>]*>',
-                listing_html, re.I,
-            )
-            if not module_script:
-                raise ValueError("项目页没有卡片 HTML，也没有可读取的 module script。")
-            bundle = _fetch_html(urljoin(PROJECTS_URL, module_script.group(1)))
-            discovered = _bundle_projects(bundle)
+        discovered, bundle_source = _discover_project_sources()
+        discovered = list({item["url"]: item for item in discovered}.values())
+        current_urls = {item["url"] for item in discovered}
+        known = {row["url"]: row for row in list_projects()["projects"]}
+        for item in discovered:
+            previous = known.get(item["url"])
+            item["id"] = previous["id"] if previous else None
+        refresh_ids = {int(value) for value in (refresh_ids or []) if str(value).isdigit()}
+        requested_urls = {_safe_project_url(value) for value in (new_urls or [])}
+        requested_urls.discard("")
+        requested_urls.intersection_update(current_urls)
         # Canonical URL is the deduplication key even if the page repeats an item.
         by_url = {item["url"]: item for item in discovered}
         discovered = list(by_url.values())
@@ -439,21 +469,22 @@ def scrape_new_projects():
             url = item["url"]
             with _DB_LOCK, _connect() as db:
                 existing = db.execute("SELECT id, status FROM projects WHERE url=?", (url,)).fetchone()
-            if existing and existing["status"] != "fetch_failed":
+            if existing and existing["id"] not in refresh_ids:
+                continue
+            if not existing and requested_urls and url not in requested_urls:
+                continue
+            if not existing and new_urls is not None and url not in requested_urls:
                 continue
             try:
-                details = item
-                if bundle:
-                    details = dict(item)
-                    detail_source = _bundle_detail_source(bundle, url, details.get("detail_slug", ""))
+                details = dict(item)
+                if bundle_source:
+                    detail_source = _bundle_detail_source(bundle_source, url, details.get("detail_slug", ""))
                     details["description"] = "\n\n".join(_js_child_texts(detail_source))[:3900]
                     details.update(_bundle_fundraising_fields(detail_source))
                     if not details["description"]:
-                        # Some projects share a route chunk name that differs
-                        # from their public URL; the listing data remains useful.
-                        fallback_description = _read_project(url)["description"]
-                        if fallback_description.lower() != "grá-vt":
-                            details["description"] = fallback_description
+                        fallback = _read_project(url)
+                        if fallback["description"].lower() != "grá-vt":
+                            details["description"] = fallback["description"]
                 else:
                     details = _read_project(url)
                     details.update(_bundle_fundraising_fields(""))
@@ -475,7 +506,18 @@ def scrape_new_projects():
                         ai_error = str(exc)[:1000]
                 now = _now()
                 with _DB_LOCK, _connect() as db:
-                    if existing:
+                    if existing and existing["id"] in refresh_ids:
+                        db.execute("""UPDATE projects SET title=?,description=?,event_date=?,image_url=?,illustrator=?,
+                          funding_goal=?,minimum_donation=?,donation_url=?,draft_title=?,draft_body=?,draft_date=?,
+                          draft_image_url=?,draft_illustrator=?,draft_funding_goal=?,draft_minimum_donation=?,
+                          draft_donation_url=?,draft_source_url=?,ai_status=?,ai_error=?,fetch_error='',fetched_at=?
+                          WHERE url=?""",
+                          (details["title"], details["description"], details["event_date"], details["image_url"], details.get("illustrator", ""),
+                           details.get("funding_goal", ""), details.get("minimum_donation", ""), details.get("donation_url", ""),
+                           details["title"], details["description"], details["event_date"], details["image_url"], details.get("illustrator", ""),
+                           details.get("funding_goal", ""), details.get("minimum_donation", ""), details.get("donation_url", ""),
+                           url, ai_status, ai_error, now, url))
+                    elif existing:
                         db.execute("""UPDATE projects SET title=?,description=?,event_date=?,image_url=?,illustrator=?,
                           funding_goal=?,minimum_donation=?,donation_url=?,ai_status=?,ai_error=?,
                           draft_title=CASE WHEN draft_title='' THEN ? ELSE draft_title END,
@@ -513,7 +555,7 @@ def scrape_new_projects():
                     else:
                         db.execute("""INSERT OR IGNORE INTO projects(url,draft_source_url,status,fetch_error,first_seen_at)
                           VALUES(?,?,'fetch_failed',?,?)""", (url, url, message, now))
-        return {"found": found, "added": added, "failed": failed}
+                return {"found": found, "added": added, "failed": failed}
     except Exception as exc:
         run_error = str(exc)[:1000]
         raise
@@ -552,6 +594,21 @@ def update_draft(project_id, payload):
 def get_project(project_id):
     with _DB_LOCK, _connect() as db:
         return _row(db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+
+def delete_project_draft(project_id):
+    with _DB_LOCK, _connect() as db:
+        row = db.execute("SELECT status FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not row:
+            return False
+        if row["status"] == "published" or db.execute(
+            "SELECT 1 FROM project_publications WHERE project_id=? AND status IN ('published','publishing') LIMIT 1",
+            (project_id,),
+        ).fetchone():
+            raise ValueError("此项目已有发布记录或正在发布，不能删除。")
+        db.execute("DELETE FROM project_publications WHERE project_id=?", (project_id,))
+        db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        return True
 
 
 def set_ai_status(project_id, status, error=""):

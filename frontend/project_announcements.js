@@ -72,6 +72,8 @@ function selectProject(projectId) {
   const alreadyPublished = project.published_guilds?.includes(String($("projectGuild").value));
   ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource", "saveProjectDraftBtn"].forEach((id) => { $(id).disabled = false; });
   $("publishProjectBtn").disabled = Boolean(alreadyPublished);
+  $("deleteProjectDraftBtn").disabled = Boolean(project.published_guilds?.length);
+  $("deleteProjectDraftBtn").title = project.published_guilds?.length ? "已发布项目不能删除" : "删除这个草稿及抓取记录";
   $("summarizeProjectBtn").disabled = !projectDashboard.aiSettings?.enabled || project.status === "fetch_failed";
   $("publishProjectBtn").textContent = alreadyPublished ? "已发布到此服务器" : "发布到 Discord";
   if (alreadyPublished) $("projectActionInfo").textContent = "此项目已发布到当前服务器。你仍可为其他服务器发布。";
@@ -113,6 +115,89 @@ async function loadProjectAnnouncements() {
     $("projectEditor").classList.add("hidden");
     $("projectEditorEmpty").classList.remove("hidden");
   }
+}
+
+function renderProjectRefreshOptions(projects) {
+  const list = $("projectRefreshList");
+  if (!projects.length) {
+    list.innerHTML = '<p class="empty-state">网站列表中没有项目。</p>';
+    return;
+  }
+  list.innerHTML = projects.map((project, index) => `
+    <label class="project-refresh-option">
+      <input type="checkbox" data-refresh-index="${index}" ${project.known ? "" : "checked"} />
+      <span><strong>${projectEscape(project.current_title || project.title || "新发现的项目")}</strong><small>${projectEscape(project.current_date || project.event_date || "日期待确认")} · ${project.known ? "已收录，默认跳过" : "新项目"}</small><small>${projectEscape(project.url)}</small></span>
+    </label>`).join("");
+}
+
+async function openProjectRefreshDialog() {
+  $("scrapeProjectsBtn").disabled = true;
+  $("projectScrapeStatus").textContent = "正在检查 Gra-VT 项目列表…";
+  try {
+    const result = await api("/api/projects/discover");
+    projectDashboard.discovered = result.projects || [];
+    renderProjectRefreshOptions(projectDashboard.discovered);
+    $("projectScrapeStatus").textContent = `发现 ${projectDashboard.discovered.length} 个项目`;
+    $("projectScrapeMeta").textContent = "选择需要重新抓取详情的项目；未勾选项目不会更新。";
+    $("projectRefreshDialog").showModal();
+  } catch (error) {
+    $("projectScrapeStatus").textContent = "检查项目列表失败";
+    $("projectScrapeMeta").textContent = localizeErrorMessage(error.message);
+    throw error;
+  } finally {
+    $("scrapeProjectsBtn").disabled = false;
+  }
+}
+
+async function refreshSelectedProjects() {
+  const selectedIds = [...$("projectRefreshList").querySelectorAll("input[data-refresh-index]:checked")]
+    .map((input) => projectDashboard.discovered[Number(input.dataset.refreshIndex)])
+    .filter((project) => project?.id)
+    .map((project) => project.id);
+  const newSelected = [...$("projectRefreshList").querySelectorAll("input[data-refresh-index]:checked")]
+    .map((input) => projectDashboard.discovered[Number(input.dataset.refreshIndex)])
+    .filter((project) => project && !project.id);
+  $("confirmProjectRefreshBtn").disabled = true;
+  $("projectScrapeStatus").textContent = "正在抓取选中的项目…";
+  try {
+    const result = await api("/api/projects/scrape", {
+      method: "POST",
+      body: JSON.stringify({ project_ids: selectedIds, new_urls: newSelected.map((project) => project.url) }),
+    });
+    $("projectRefreshDialog").close();
+    projectDashboard.rows = result.projects || [];
+    projectDashboard.channels = result.channels || {};
+    projectDashboard.lastRun = result.last_run || null;
+    projectDashboard.loaded = true;
+    if (newSelected.length) {
+      const addedRows = projectDashboard.rows.filter((row) => newSelected.some((item) => item.url === row.url));
+      if (addedRows.length) projectDashboard.activeId = String(addedRows[0].id);
+    }
+    renderProjectRun();
+    renderProjectList();
+    if (projectDashboard.activeId && selectedProject()) selectProject(projectDashboard.activeId);
+    else if (projectDashboard.rows.length) selectProject(projectDashboard.rows[0].id);
+    toast(`完成：发现 ${result.found} 个项目，新增 ${result.added} 个，详情失败 ${result.failed} 个。`);
+  } catch (error) {
+    $("projectScrapeStatus").textContent = "更新项目失败";
+    $("projectScrapeMeta").textContent = localizeErrorMessage(error.message);
+    throw error;
+  } finally {
+    $("confirmProjectRefreshBtn").disabled = false;
+  }
+}
+
+async function deleteProjectDraft() {
+  const project = selectedProject();
+  if (!project) return;
+  if (!window.confirm(`确定删除「${project.draft_title || project.title || "此项目"}」及其本地草稿吗？`)) return;
+  await api(`/api/projects/${project.id}`, { method: "DELETE" });
+  projectDashboard.rows = projectDashboard.rows.filter((row) => row.id !== project.id);
+  projectDashboard.activeId = null;
+  $("projectEditor").classList.add("hidden");
+  $("projectEditorEmpty").classList.remove("hidden");
+  renderProjectList();
+  toast("项目草稿已删除。");
 }
 
 async function ensureProjectAnnouncementsLoaded() {
@@ -236,28 +321,17 @@ async function publishProjectDraft() {
 }
 
 function wireProjectAnnouncements() {
-  $("scrapeProjectsBtn").addEventListener("click", () => runAction("抓取项目", async () => {
-    $("scrapeProjectsBtn").disabled = true;
-    $("projectScrapeStatus").textContent = "正在读取 Gra-VT 项目列表…";
-    try {
-      const result = await api("/api/projects/scrape", { method: "POST", body: "{}" });
-      projectDashboard.rows = result.projects || [];
-      projectDashboard.channels = result.channels || {};
-      projectDashboard.lastRun = result.last_run || null;
-      projectDashboard.loaded = true;
-      renderProjectRun();
-      renderProjectList();
-      if (projectDashboard.activeId && selectedProject()) selectProject(projectDashboard.activeId);
-      else if (projectDashboard.rows.length) selectProject(projectDashboard.rows[0].id);
-      toast(`抓取完成：发现 ${result.found} 个项目，新增 ${result.added} 个。`);
-    } catch (error) {
-      $("projectScrapeStatus").textContent = "抓取失败";
-      $("projectScrapeMeta").textContent = localizeErrorMessage(error.message);
-      throw error;
-    } finally {
-      $("scrapeProjectsBtn").disabled = false;
-    }
-  }));
+  $("scrapeProjectsBtn").addEventListener("click", () => runAction("检查 Gra-VT 项目", openProjectRefreshDialog));
+  $("confirmProjectRefreshBtn").addEventListener("click", () => runAction("更新选中项目", refreshSelectedProjects));
+  $("selectNewProjectsBtn").addEventListener("click", () => {
+    $("projectRefreshList").querySelectorAll("input[data-refresh-index]").forEach((input) => {
+      const project = projectDashboard.discovered[Number(input.dataset.refreshIndex)];
+      input.checked = !project?.known;
+    });
+  });
+  $("selectAllProjectsBtn").addEventListener("click", () => $("projectRefreshList").querySelectorAll("input[data-refresh-index]").forEach((input) => { input.checked = true; }));
+  $("selectNoProjectsBtn").addEventListener("click", () => $("projectRefreshList").querySelectorAll("input[data-refresh-index]").forEach((input) => { input.checked = false; }));
+  ["closeProjectRefreshBtn", "cancelProjectRefreshBtn"].forEach((id) => $(id).addEventListener("click", () => $("projectRefreshDialog").close()));
   $("projectGuild").addEventListener("change", async () => {
     await loadProjectChannels($("projectGuild").value);
     if (projectDashboard.activeId) selectProject(projectDashboard.activeId);
@@ -271,6 +345,7 @@ function wireProjectAnnouncements() {
     toast("公告频道已保存。");
   }));
   $("saveProjectDraftBtn").addEventListener("click", () => runAction("保存草稿", saveProjectDraft));
+  $("deleteProjectDraftBtn").addEventListener("click", () => runAction("删除项目草稿", deleteProjectDraft));
   $("summarizeProjectBtn").addEventListener("click", () => runAction("AI 整理", summarizeProjectDraft));
   $("publishProjectBtn").addEventListener("click", () => runAction("发布项目公告", publishProjectDraft));
   ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource", "projectDraftIllustrator", "projectDraftFundingGoal", "projectDraftMinimumDonation", "projectDraftDonationUrl"].forEach((id) => $(id).addEventListener("input", renderProjectPreview));

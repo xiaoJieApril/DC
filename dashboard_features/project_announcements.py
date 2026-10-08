@@ -47,6 +47,11 @@ class PublishPayload(BaseModel):
     channel_id: str
 
 
+class RefreshPayload(BaseModel):
+    project_ids: list[int] = []
+    new_urls: list[str] | None = None
+
+
 def _http_error(exc):
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -72,14 +77,34 @@ def save_project_ai_settings(payload: AISettingsPayload):
 
 
 @router.post("/api/projects/scrape", dependencies=[Depends(require_admin)])
-def scrape_projects():
+def scrape_projects(payload: RefreshPayload):
     try:
-        result = store.scrape_new_projects()
+        result = store.scrape_new_projects(payload.project_ids, payload.new_urls)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {**result, **store.list_projects()}
+
+
+@router.get("/api/projects/discover", dependencies=[Depends(require_admin)])
+def discover_projects():
+    try:
+        return {"projects": store.discover_projects()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/api/projects/{project_id}", dependencies=[Depends(require_admin)])
+def delete_project(project_id: int):
+    try:
+        deleted = store.delete_project_draft(project_id)
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="找不到该项目草稿。")
+    append_audit_log("deleted", "project_announcements", "", str(project_id), {"project_id": project_id}, request_actor())
+    return {"id": project_id, "deleted": True}
 
 
 @router.patch("/api/projects/{project_id}", dependencies=[Depends(require_admin)])
