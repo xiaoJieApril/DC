@@ -44,6 +44,8 @@ def error_hint(error_type, message):
         return "Discord API 请求触发速率限制。减少重复操作并等待冷却时间结束。"
     if "validation" in kind or "valueerror" in kind:
         return "输入或保存的配置不符合要求。检查必填内容、Discord ID 和功能设置。"
+    if "typeerror" in kind and ("none" in text or "mapping" in text):
+        return "程序尝试展开一个空结果。检查调用函数是否在所有正常执行路径都返回了字典或其他预期值；展开 traceback 查看出错函数。"
     return "查看 traceback 中最早出现的项目代码位置，确认相关配置与 Discord API 响应。"
 
 

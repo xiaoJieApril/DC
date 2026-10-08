@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import threading
+import traceback as traceback_module
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -356,6 +357,8 @@ async def dashboard_request_protection(request: Request, call_next):
 
 
 def observability_feature_for_path(path):
+    if path.startswith("/api/projects"):
+        return "project_announcements"
     if path.startswith("/api/messages"):
         return "messages"
     if path.startswith("/api/discord/commands/sendmessage"):
@@ -391,6 +394,10 @@ async def dashboard_observability(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
+        root_error = exc
+        while getattr(root_error, "exceptions", None):
+            root_error = root_error.exceptions[0]
+        full_traceback = "".join(traceback_module.format_exception(type(exc), exc, exc.__traceback__))
         await asyncio.to_thread(
             observability.record_feature, feature, f"{method} {path}", False
         )
@@ -399,7 +406,9 @@ async def dashboard_observability(request: Request, call_next):
             "ERROR",
             feature,
             f"{method} {path}",
-            exc,
+            root_error,
+            str(root_error),
+            full_traceback,
         )
         raise
     if response.headers.get("X-Idempotent-Replay") != "true" and response.status_code not in {401, 403, 429}:
@@ -409,7 +418,7 @@ async def dashboard_observability(request: Request, call_next):
             f"{method} {path}",
             response.status_code < 400,
         )
-    if response.status_code >= 500:
+    if response.status_code >= 500 and not getattr(request.state, "observability_error_recorded", False):
         await asyncio.to_thread(
             observability.record_error,
             "ERROR",

@@ -1,5 +1,5 @@
 """Dashboard API for Gra-VT project announcement drafts."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from dashboard_api import (
@@ -9,6 +9,7 @@ from dashboard_api import (
     require_admin,
     request_actor,
 )
+from observability import observability
 import project_announcements as store
 import project_ai
 
@@ -77,21 +78,29 @@ def save_project_ai_settings(payload: AISettingsPayload):
 
 
 @router.post("/api/projects/scrape", dependencies=[Depends(require_admin)])
-def scrape_projects(payload: RefreshPayload):
+def scrape_projects(payload: RefreshPayload, request: Request):
     try:
         result = store.scrape_new_projects(payload.project_ids, payload.new_urls)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
+        observability.record_error(
+            "ERROR", "project_announcements", "POST /api/projects/scrape", exc
+        )
+        request.state.observability_error_recorded = True
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {**result, **store.list_projects()}
 
 
 @router.get("/api/projects/discover", dependencies=[Depends(require_admin)])
-def discover_projects():
+def discover_projects(request: Request):
     try:
         return {"projects": store.discover_projects()}
     except Exception as exc:
+        observability.record_error(
+            "ERROR", "project_announcements", "GET /api/projects/discover", exc
+        )
+        request.state.observability_error_recorded = True
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

@@ -555,7 +555,8 @@ def scrape_new_projects(refresh_ids=None, new_urls=None):
                     else:
                         db.execute("""INSERT OR IGNORE INTO projects(url,draft_source_url,status,fetch_error,first_seen_at)
                           VALUES(?,?,'fetch_failed',?,?)""", (url, url, message, now))
-                return {"found": found, "added": added, "failed": failed}
+                continue
+        return {"found": found, "added": added, "failed": failed}
     except Exception as exc:
         run_error = str(exc)[:1000]
         raise
