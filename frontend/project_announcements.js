@@ -69,11 +69,15 @@ function selectProject(projectId) {
   $("projectDraftStatus").textContent = projectStatusLabel(project);
   const aiMessage = project.ai_status === "failed" ? `AI 总结失败，已保留网页抓取内容：${project.ai_error || "未知错误"}` : project.ai_status === "summarized" ? "AI 已整理此项目；发布前请校对金额、链接和画师信息。" : "当前使用网页抓取内容，尚未调用 AI。";
   $("projectActionInfo").textContent = project.fetch_error ? `抓取失败：${project.fetch_error}。点击立即抓取可重试。` : aiMessage;
-  const alreadyPublished = project.published_guilds?.includes(String($("projectGuild").value));
+  const selectedGuildId = String($("projectGuild").value);
+  const currentPublication = project.publications?.find((publication) => publication.guild_id === selectedGuildId);
+  const alreadyPublished = Boolean(currentPublication);
   ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource", "saveProjectDraftBtn"].forEach((id) => { $(id).disabled = false; });
   $("publishProjectBtn").disabled = Boolean(alreadyPublished);
   $("deleteProjectDraftBtn").disabled = Boolean(project.published_guilds?.length);
   $("deleteProjectDraftBtn").title = project.published_guilds?.length ? "已发布项目不能删除" : "删除这个草稿及抓取记录";
+  $("deletePublishedProjectBtn").disabled = currentPublication?.status !== "published" || !currentPublication?.discord_message_id;
+  $("deletePublishedProjectBtn").title = $("deletePublishedProjectBtn").disabled ? "此服务器没有可删除的已发布公告" : "同时删除 Discord 中的公告消息和本地发布记录";
   $("summarizeProjectBtn").disabled = !projectDashboard.aiSettings?.enabled || project.status === "fetch_failed";
   $("publishProjectBtn").textContent = alreadyPublished ? "已发布到此服务器" : "发布到 Discord";
   if (alreadyPublished) $("projectActionInfo").textContent = "此项目已发布到当前服务器。你仍可为其他服务器发布。";
@@ -198,6 +202,18 @@ async function deleteProjectDraft() {
   $("projectEditorEmpty").classList.remove("hidden");
   renderProjectList();
   toast("项目草稿已删除。");
+}
+
+async function deletePublishedProject() {
+  const project = selectedProject();
+  const guildId = String($("projectGuild").value);
+  const publication = project?.publications?.find((item) => item.guild_id === guildId && item.status === "published");
+  if (!project || !publication) return;
+  const title = project.draft_title || project.title || "此项目";
+  if (!window.confirm(`确定删除「${title}」在当前服务器已发布的 Discord 公告吗？此操作无法撤销。`)) return;
+  await api(`/api/projects/${project.id}/publications/${encodeURIComponent(guildId)}`, { method: "DELETE" });
+  toast("已删除 Discord 公告。");
+  await loadProjectAnnouncements();
 }
 
 async function ensureProjectAnnouncementsLoaded() {
@@ -346,6 +362,7 @@ function wireProjectAnnouncements() {
   }));
   $("saveProjectDraftBtn").addEventListener("click", () => runAction("保存草稿", saveProjectDraft));
   $("deleteProjectDraftBtn").addEventListener("click", () => runAction("删除项目草稿", deleteProjectDraft));
+  $("deletePublishedProjectBtn").addEventListener("click", () => runAction("删除已发布公告", deletePublishedProject));
   $("summarizeProjectBtn").addEventListener("click", () => runAction("AI 整理", summarizeProjectDraft));
   $("publishProjectBtn").addEventListener("click", () => runAction("发布项目公告", publishProjectDraft));
   ["projectDraftTitle", "projectDraftBody", "projectDraftDate", "projectDraftImage", "projectDraftSource", "projectDraftIllustrator", "projectDraftFundingGoal", "projectDraftMinimumDonation", "projectDraftDonationUrl"].forEach((id) => $(id).addEventListener("input", renderProjectPreview));

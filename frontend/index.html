@@ -344,7 +344,7 @@
               <div class="grid two"><label>最低捐款<input id="projectDraftMinimumDonation" maxlength="120" placeholder="例如 RM30" /></label><label>捐款链接<input id="projectDraftDonationUrl" type="url" placeholder="https://..." /></label></div>
               <label>项目来源链接<input id="projectDraftSource" type="url" placeholder="https://gra-vt.my/projects/..." /></label>
               <div class="project-preview-wrap"><h4>Discord Embed 预览</h4><div id="projectPreview" class="discord-message-surface"></div></div>
-              <div class="actions"><button type="button" id="summarizeProjectBtn" class="secondary">用 AI 整理</button><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="deleteProjectDraftBtn" class="delete">删除草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button></div>
+              <div class="actions"><button type="button" id="summarizeProjectBtn" class="secondary">用 AI 整理</button><button type="button" id="saveProjectDraftBtn" class="secondary">保存草稿</button><button type="button" id="deleteProjectDraftBtn" class="delete">删除草稿</button><button type="button" id="publishProjectBtn">发布到 Discord</button><button type="button" id="deletePublishedProjectBtn" class="delete" disabled>删除已发布公告</button></div>
               <p id="projectActionInfo" class="muted" aria-live="polite"></p>
             </form>
           </div>
@@ -389,7 +389,7 @@
     <script src="./saved_items.js?v=20261008-dashboard-2"></script>
     <script src="./role_panels.js?v=20261008-dashboard-2"></script>
     <script src="./observability.js?v=20261008-dashboard-2"></script>
-    <script src="./project_announcements.js?v=20261008-projects-3"></script>
+    <script src="./project_announcements.js?v=20261023-delete-published-1"></script>
     <script src="./app.js?v=20261008-dashboard-4"></script>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </body>

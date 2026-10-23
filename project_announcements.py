@@ -706,6 +706,34 @@ def get_project_publication(project_id, guild_id):
                                (project_id, str(guild_id))).fetchone())
 
 
+def delete_project_publication(project_id, guild_id):
+    """Forget a publication after its Discord message has been deleted."""
+    with _DB_LOCK, _connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        publication = db.execute(
+            "SELECT * FROM project_publications WHERE project_id=? AND guild_id=? AND status='published'",
+            (project_id, str(guild_id)),
+        ).fetchone()
+        if not publication:
+            return None
+        db.execute("DELETE FROM project_publications WHERE project_id=? AND guild_id=?",
+                   (project_id, str(guild_id)))
+        remaining = db.execute(
+            "SELECT guild_id,channel_id,discord_message_id,published_at FROM project_publications "
+            "WHERE project_id=? AND status='published' ORDER BY published_at DESC LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if remaining:
+            db.execute("UPDATE projects SET status='published',published_at=?,published_guild_id=?,"
+                       "published_channel_id=?,discord_message_id=? WHERE id=?",
+                       (remaining["published_at"], remaining["guild_id"], remaining["channel_id"],
+                        remaining["discord_message_id"], project_id))
+        else:
+            db.execute("UPDATE projects SET status='draft',published_at='',published_guild_id='',"
+                       "published_channel_id='',discord_message_id='' WHERE id=?", (project_id,))
+        return dict(publication)
+
+
 def reset_stale_project_publish(project_id, guild_id, max_age_seconds=300):
     """Release an abandoned publish claim only after an operator checks Discord."""
     with _DB_LOCK, _connect() as db:

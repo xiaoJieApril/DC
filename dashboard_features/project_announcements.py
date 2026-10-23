@@ -130,6 +130,27 @@ def delete_project(project_id: int):
     return {"id": project_id, "deleted": True}
 
 
+@router.delete("/api/projects/{project_id}/publications/{guild_id}", dependencies=[Depends(require_admin)])
+def delete_project_publication(project_id: int, guild_id: str):
+    if not guild_id.isdigit():
+        raise HTTPException(status_code=400, detail="请选择有效的 Discord 服务器。")
+    publication = store.get_project_publication(project_id, guild_id)
+    if not publication or publication["status"] != "published":
+        raise HTTPException(status_code=404, detail="找不到该服务器上的已发布公告。")
+    channel_id = str(publication.get("channel_id") or "")
+    message_id = str(publication.get("discord_message_id") or "")
+    if not channel_id.isdigit() or not message_id.isdigit():
+        raise HTTPException(status_code=409, detail="发布记录缺少 Discord 消息 ID，无法安全删除。")
+    # Keep the local publication record unless Discord confirms deletion.
+    discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}")
+    deleted = store.delete_project_publication(project_id, guild_id)
+    if not deleted:
+        raise HTTPException(status_code=409, detail="Discord 消息已删除，但本地发布记录未能更新。请刷新公告列表。")
+    append_audit_log("deleted", "project_announcements", guild_id, message_id,
+                     {"project_id": project_id, "channel_id": channel_id, "deleted_discord": True}, request_actor())
+    return {"project_id": project_id, "guild_id": guild_id, "message_id": message_id, "deleted": True}
+
+
 @router.patch("/api/projects/{project_id}", dependencies=[Depends(require_admin)])
 def save_project_draft(project_id: int, payload: DraftPayload):
     try:
