@@ -141,14 +141,24 @@ def delete_project_publication(project_id: int, guild_id: str):
     message_id = str(publication.get("discord_message_id") or "")
     if not channel_id.isdigit() or not message_id.isdigit():
         raise HTTPException(status_code=409, detail="发布记录缺少 Discord 消息 ID，无法安全删除。")
-    # Keep the local publication record unless Discord confirms deletion.
-    discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}")
+    # A 404 means the message was already removed in Discord (for example,
+    # manually by a moderator). Clear the stale local claim in that case too.
+    discord_message_missing = False
+    try:
+        discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}")
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        discord_message_missing = True
     deleted = store.delete_project_publication(project_id, guild_id)
     if not deleted:
         raise HTTPException(status_code=409, detail="Discord 消息已删除，但本地发布记录未能更新。请刷新公告列表。")
     append_audit_log("deleted", "project_announcements", guild_id, message_id,
-                     {"project_id": project_id, "channel_id": channel_id, "deleted_discord": True}, request_actor())
-    return {"project_id": project_id, "guild_id": guild_id, "message_id": message_id, "deleted": True}
+                     {"project_id": project_id, "channel_id": channel_id,
+                      "deleted_discord": not discord_message_missing,
+                      "discord_message_missing": discord_message_missing}, request_actor())
+    return {"project_id": project_id, "guild_id": guild_id, "message_id": message_id,
+            "deleted": True, "discord_message_missing": discord_message_missing}
 
 
 @router.patch("/api/projects/{project_id}", dependencies=[Depends(require_admin)])

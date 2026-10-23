@@ -211,8 +211,8 @@ async function deletePublishedProject() {
   if (!project || !publication) return;
   const title = project.draft_title || project.title || "此项目";
   if (!window.confirm(`确定删除「${title}」在当前服务器已发布的 Discord 公告吗？此操作无法撤销。`)) return;
-  await api(`/api/projects/${project.id}/publications/${encodeURIComponent(guildId)}`, { method: "DELETE" });
-  toast("已删除 Discord 公告。");
+  const result = await api(`/api/projects/${project.id}/publications/${encodeURIComponent(guildId)}`, { method: "DELETE" });
+  toast(result.discord_message_missing ? "Discord 公告已不存在，已清除旧发布记录，可以重新发布。" : "已删除 Discord 公告。");
   await loadProjectAnnouncements();
 }
 
