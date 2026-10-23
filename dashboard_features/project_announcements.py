@@ -9,6 +9,7 @@ from dashboard_api import (
     require_admin,
     request_actor,
 )
+from announcement_types import ANNOUNCEMENT_TYPES
 from observability import observability
 import project_announcements as store
 import project_ai
@@ -19,6 +20,8 @@ store.init_project_db()
 
 
 class DraftPayload(BaseModel):
+    announcement_type: str | None = None
+    draft_extra: str | None = None
     draft_title: str = ""
     draft_body: str = ""
     draft_date: str = ""
@@ -48,6 +51,12 @@ class PublishPayload(BaseModel):
     channel_id: str
 
 
+class ResetPublishPayload(BaseModel):
+    guild_id: str
+    channel_id: str
+    checked_channel: bool = False
+
+
 class RefreshPayload(BaseModel):
     project_ids: list[int] = []
     new_urls: list[str] | None = None
@@ -60,6 +69,11 @@ def _http_error(exc):
 @router.get("/api/projects", dependencies=[Depends(require_admin)])
 def get_projects():
     return store.list_projects()
+
+
+@router.get("/api/projects/types", dependencies=[Depends(require_admin)])
+def get_announcement_types():
+    return {"types": ANNOUNCEMENT_TYPES}
 
 
 @router.get("/api/projects/ai-settings", dependencies=[Depends(require_admin)])
@@ -212,19 +226,51 @@ def publish_project(project_id: int, payload: PublishPayload):
     try:
         result = discord_request("POST", f"/channels/{payload.channel_id}/messages",
                                  {"embeds": [embed], "allowed_mentions": {"parse": []}})
-    except HTTPException:
-        store.release_project_publish(project_id, payload.guild_id)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        code = detail.get("code", "")
+        # Requests that failed before an upstream response are ambiguous. Keep
+        # the claim to prevent a retry from duplicating a message Discord got.
+        ambiguous = code in {"discord_unreachable", "discord_invalid_response"} or (
+            500 <= exc.status_code <= 599 and code not in {
+                "discord_circuit_open", "discord_upstream_busy", "discord_auth_paused", "discord_shared_budget",
+            }
+        )
+        if not ambiguous:
+            store.release_project_publish(project_id, payload.guild_id)
         raise
     except Exception as exc:
-        store.release_project_publish(project_id, payload.guild_id)
+        # An unexpected transport failure may occur after Discord accepted it.
         raise HTTPException(status_code=502, detail=f"Discord 发布失败：{exc}") from exc
     if not result or not result.get("id"):
-        store.release_project_publish(project_id, payload.guild_id)
         raise HTTPException(status_code=502, detail="Discord 未返回消息 ID，无法确认发布结果。")
-    if not store.mark_published(project_id, payload.guild_id, payload.channel_id, result["id"]):
+    if not store.mark_published(project_id, payload.guild_id, payload.channel_id, result["id"], embed):
         raise HTTPException(status_code=409, detail="Discord 已收到消息，但本地状态更新失败。请核对频道后再处理，避免重复发送。")
     append_audit_log("sent", "project_announcements", payload.guild_id, result["id"],
                      {"channel_id": payload.channel_id, "project_id": project_id,
                       "title": project["draft_title"]}, request_actor())
     return {"message_id": result["id"], "guild_id": payload.guild_id,
             "channel_id": payload.channel_id, "status": "published"}
+
+
+@router.post("/api/projects/{project_id}/publish/reset", dependencies=[Depends(require_admin)])
+def reset_project_publish_claim(project_id: int, payload: ResetPublishPayload):
+    if not payload.checked_channel:
+        raise HTTPException(status_code=400, detail="Check the configured Discord channel for an existing announcement before resetting this claim.")
+    if not payload.guild_id.isdigit() or not payload.channel_id.isdigit():
+        raise HTTPException(status_code=400, detail="Select a valid server and announcement channel.")
+    try:
+        cached_guild_channel(payload.guild_id, payload.channel_id)
+    except HTTPException:
+        raise
+    project = store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project draft not found.")
+    publication = store.get_project_publication(project_id, payload.guild_id)
+    if publication and publication["status"] == "published":
+        raise HTTPException(status_code=409, detail="This project already has a completed publication in that server.")
+    if publication and publication["channel_id"] != payload.channel_id:
+        raise HTTPException(status_code=409, detail="The selected channel does not match the channel recorded on the stale claim.")
+    if not store.reset_stale_project_publish(project_id, payload.guild_id):
+        raise HTTPException(status_code=409, detail="No stale publish claim is available to reset.")
+    return {"id": project_id, "status": "claim_reset"}

@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import project_ai
+from announcement_types import DEFAULT_ANNOUNCEMENT_TYPE, normalize_announcement_type
 
 
 BASE_URL = "https://gra-vt.my"
@@ -77,7 +78,9 @@ def init_project_db():
           channel_id TEXT NOT NULL,
           discord_message_id TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'publishing',
+          claimed_at TEXT NOT NULL DEFAULT '',
           published_at TEXT NOT NULL DEFAULT '',
+          published_snapshot TEXT NOT NULL DEFAULT '',
           PRIMARY KEY(project_id, guild_id)
         );
         CREATE TABLE IF NOT EXISTS project_scrape_runs (
@@ -102,10 +105,20 @@ def init_project_db():
             "draft_donation_url": "TEXT NOT NULL DEFAULT ''",
             "ai_status": "TEXT NOT NULL DEFAULT 'scrape_only'",
             "ai_error": "TEXT NOT NULL DEFAULT ''",
+            "announcement_type": f"TEXT NOT NULL DEFAULT '{DEFAULT_ANNOUNCEMENT_TYPE}'",
+            "draft_extra": "TEXT NOT NULL DEFAULT '{}'",
         }
         for name, definition in additions.items():
             if name not in columns:
                 db.execute(f"ALTER TABLE projects ADD COLUMN {name} {definition}")
+        publication_columns = {row["name"] for row in db.execute("PRAGMA table_info(project_publications)")}
+        publication_additions = {
+            "claimed_at": "TEXT NOT NULL DEFAULT ''",
+            "published_snapshot": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in publication_additions.items():
+            if name not in publication_columns:
+                db.execute(f"ALTER TABLE project_publications ADD COLUMN {name} {definition}")
 
 
 def _safe_project_url(href):
@@ -394,10 +407,23 @@ def list_projects():
         projects = [_row(r) for r in db.execute("SELECT * FROM projects ORDER BY first_seen_at DESC, id DESC")]
         settings = {r["guild_id"]: r["channel_id"] for r in db.execute("SELECT guild_id, channel_id FROM project_announcement_settings")}
         run = db.execute("SELECT * FROM project_scrape_runs ORDER BY id DESC LIMIT 1").fetchone()
-        publication_rows = db.execute("SELECT project_id,guild_id,channel_id,discord_message_id,status,published_at FROM project_publications WHERE status IN ('published','publishing')").fetchall()
+        publication_rows = db.execute("SELECT project_id,guild_id,channel_id,discord_message_id,status,published_at,claimed_at FROM project_publications WHERE status IN ('published','publishing')").fetchall()
     publications = {}
     for row in publication_rows:
-        publications.setdefault(str(row["project_id"]), []).append(dict(row))
+        publication = dict(row)
+        publication["claim_stale"] = False
+        if publication["status"] == "publishing":
+            try:
+                if not publication["claimed_at"]:
+                    raise ValueError("legacy claim has no timestamp")
+                claimed = datetime.fromisoformat(publication["claimed_at"])
+                if claimed.tzinfo is None:
+                    claimed = claimed.replace(tzinfo=timezone.utc)
+                publication["claim_stale"] = (datetime.now(timezone.utc) - claimed).total_seconds() >= 300
+            except (TypeError, ValueError):
+                # Claims predating claimed_at need manual channel review too.
+                publication["claim_stale"] = True
+        publications.setdefault(str(row["project_id"]), []).append(publication)
     for project in projects:
         project["publications"] = publications.get(str(project["id"]), [])
         project["published_guilds"] = [entry["guild_id"] for entry in project["publications"]]
@@ -507,7 +533,7 @@ def scrape_new_projects(refresh_ids=None, new_urls=None):
                 now = _now()
                 with _DB_LOCK, _connect() as db:
                     if existing and existing["id"] in refresh_ids:
-                        db.execute("""UPDATE projects SET title=?,description=?,event_date=?,image_url=?,illustrator=?,
+                        db.execute("""UPDATE projects SET title=?,description=?,event_date=?,image_url=?,illustrator=?,status='draft',
                           funding_goal=?,minimum_donation=?,donation_url=?,draft_title=?,draft_body=?,draft_date=?,
                           draft_image_url=?,draft_illustrator=?,draft_funding_goal=?,draft_minimum_donation=?,
                           draft_donation_url=?,draft_source_url=?,ai_status=?,ai_error=?,fetch_error='',fetched_at=?
@@ -570,18 +596,28 @@ def scrape_new_projects(refresh_ids=None, new_urls=None):
 
 
 def update_draft(project_id, payload):
-    allowed = {"draft_title", "draft_body", "draft_date", "draft_image_url", "draft_source_url",
+    allowed = {"draft_title", "draft_body", "draft_date", "draft_image_url", "draft_source_url", "draft_extra",
                "draft_illustrator", "draft_funding_goal", "draft_minimum_donation", "draft_donation_url"}
     values = {key: str(payload.get(key) or "").strip() for key in allowed}
+    requested_announcement_type = payload.get("announcement_type")
+    requested_extra = payload.get("draft_extra")
     if len(values["draft_title"]) > 256 or len(values["draft_body"]) > 4000:
         raise ValueError("标题最多 256 个字符，正文最多 4000 个字符。")
     for key in ("draft_image_url", "draft_source_url", "draft_donation_url"):
         if values[key] and (urlparse(values[key]).scheme not in ("http", "https") or not urlparse(values[key]).netloc):
             raise ValueError("图片和来源链接必须使用有效的 HTTP 或 HTTPS 地址。")
     with _DB_LOCK, _connect() as db:
-        row = db.execute("SELECT status FROM projects WHERE id=?", (project_id,)).fetchone()
+        row = db.execute("SELECT status,announcement_type,draft_extra FROM projects WHERE id=?", (project_id,)).fetchone()
         if not row:
             return None
+        announcement_type = normalize_announcement_type(requested_announcement_type or row["announcement_type"])
+        try:
+            extra = json.loads(requested_extra if requested_extra is not None else row["draft_extra"] or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("Additional draft fields must be valid JSON.") from exc
+        if not isinstance(extra, dict):
+            raise ValueError("Additional draft fields must be a JSON object.")
+        values["draft_extra"] = json.dumps(extra, ensure_ascii=False)
         if row["status"] == "published":
             raise ValueError("已发布项目不能编辑；请在 Discord 中修改已发布消息。")
         db.execute("""UPDATE projects SET draft_title=?,draft_body=?,draft_date=?,draft_image_url=?,draft_source_url=?,
@@ -589,6 +625,8 @@ def update_draft(project_id, payload):
                    (values["draft_title"], values["draft_body"], values["draft_date"], values["draft_image_url"],
                     values["draft_source_url"], values["draft_illustrator"], values["draft_funding_goal"],
                     values["draft_minimum_donation"], values["draft_donation_url"], project_id))
+        db.execute("UPDATE projects SET announcement_type=?,draft_extra=? WHERE id=?",
+                   (announcement_type, values["draft_extra"], project_id))
         return _row(db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
 
@@ -637,8 +675,8 @@ def publish_project(project_id, guild_id, channel_id):
             if not row[key].strip():
                 raise ValueError("发布前请填写公告标题和正文。")
         try:
-            db.execute("INSERT INTO project_publications(project_id,guild_id,channel_id,status) VALUES(?,?,?,'publishing')",
-                       (project_id, str(guild_id), str(channel_id)))
+            db.execute("INSERT INTO project_publications(project_id,guild_id,channel_id,status,claimed_at) VALUES(?,?,?,'publishing',?)",
+                       (project_id, str(guild_id), str(channel_id), _now()))
         except sqlite3.IntegrityError as exc:
             raise ValueError("此项目已发布或正在发布到所选服务器，不能重复发送。") from exc
         return _row(row)
@@ -650,9 +688,43 @@ def release_project_publish(project_id, guild_id):
                    (project_id, str(guild_id)))
 
 
-def mark_published(project_id, guild_id, channel_id, message_id):
+def mark_published(project_id, guild_id, channel_id, message_id, published_snapshot=None):
     with _DB_LOCK, _connect() as db:
         db.execute("""UPDATE project_publications SET status='published',published_at=?,
-          channel_id=?,discord_message_id=? WHERE project_id=? AND guild_id=? AND status='publishing'""",
-          (_now(), str(channel_id), str(message_id), project_id, str(guild_id)))
+          channel_id=?,discord_message_id=?,published_snapshot=? WHERE project_id=? AND guild_id=? AND status='publishing'""",
+          (_now(), str(channel_id), str(message_id), json.dumps(published_snapshot or {}, ensure_ascii=False), project_id, str(guild_id)))
+        changed = db.execute("SELECT changes()").fetchone()[0] == 1
+        if changed:
+            db.execute("UPDATE projects SET status='published',published_at=?,published_guild_id=?,published_channel_id=?,discord_message_id=? WHERE id=?",
+                       (_now(), str(guild_id), str(channel_id), str(message_id), project_id))
+        return changed
+
+
+def get_project_publication(project_id, guild_id):
+    with _DB_LOCK, _connect() as db:
+        return _row(db.execute("SELECT * FROM project_publications WHERE project_id=? AND guild_id=?",
+                               (project_id, str(guild_id))).fetchone())
+
+
+def reset_stale_project_publish(project_id, guild_id, max_age_seconds=300):
+    """Release an abandoned publish claim only after an operator checks Discord."""
+    with _DB_LOCK, _connect() as db:
+        row = db.execute("SELECT claimed_at FROM project_publications WHERE project_id=? AND guild_id=? AND status='publishing'",
+                         (project_id, str(guild_id))).fetchone()
+        if not row:
+            return False
+        try:
+            if not row["claimed_at"]:
+                raise ValueError("legacy claim has no timestamp")
+            claimed = datetime.fromisoformat(row["claimed_at"])
+            if claimed.tzinfo is None:
+                claimed = claimed.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            # Pre-migration claims have no reliable age; reset only after the
+            # API's explicit channel-check confirmation.
+            claimed = None
+        if claimed is not None and (datetime.now(timezone.utc) - claimed).total_seconds() < max_age_seconds:
+            return False
+        db.execute("DELETE FROM project_publications WHERE project_id=? AND guild_id=? AND status='publishing'",
+                   (project_id, str(guild_id)))
         return db.execute("SELECT changes()").fetchone()[0] == 1
