@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import traceback as traceback_module
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -56,12 +57,17 @@ class ObservabilityStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=5)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=5000")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self):
         with self._connect() as db:
