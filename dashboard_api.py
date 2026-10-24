@@ -680,6 +680,7 @@ def start_bot_process():
             log_handle.close()
         BOT_STARTED_AT = time.time()
         BOT_PID_PATH.write_text(str(BOT_PROCESS.pid), encoding="utf-8")
+        observability.record_event("manual_start", "Dashboard 启动 bot")
         return bot_status_payload()
 
 
@@ -692,6 +693,7 @@ def stop_bot_process():
             BOT_PROCESS = None
             BOT_STARTED_AT = 0.0
             return bot_status_payload()
+        observability.record_event("manual_stop", "Dashboard 停止 bot")
         BOT_PROCESS.terminate()
         try:
             BOT_PROCESS.wait(timeout=12)

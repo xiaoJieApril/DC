@@ -36,7 +36,7 @@ from welcome_automation import (
     render_welcome_template,
 )
 from request_limits import SharedRateCoordinator
-from observability import ObservabilityLogHandler, feature_for_trigger, observability
+from observability import GatewayEventHandler, ObservabilityLogHandler, feature_for_trigger, observability
 
 load_dotenv()
 init_db()
@@ -58,6 +58,14 @@ if not logger.handlers:
     logger.addHandler(stream_handler)
 if not any(isinstance(handler, ObservabilityLogHandler) for handler in logger.handlers):
     logger.addHandler(ObservabilityLogHandler(observability))
+# Connection lines from discord.py (connected, RESUMED, WebSocket closed ...) explain disconnect incidents.
+_gateway_handler = GatewayEventHandler(observability)
+for _name in ("discord.gateway", "discord.client"):
+    _gateway_logger = logging.getLogger(_name)
+    if _gateway_logger.getEffectiveLevel() > logging.INFO:
+        _gateway_logger.setLevel(logging.INFO)
+    if not any(isinstance(handler, GatewayEventHandler) for handler in _gateway_logger.handlers):
+        _gateway_logger.addHandler(_gateway_handler)
 RATE_COORDINATOR = SharedRateCoordinator(BASE_DIR / "data" / "request_limits.sqlite3")
 BOT_STARTED_AT = time.time()
 BOT_ACTION_INFLIGHT = set()

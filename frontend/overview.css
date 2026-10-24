@@ -1,0 +1,199 @@
+/* Overview page. Loaded after styles.css; everything is scoped to #overview.
+   Colours come from the theme tokens in styles.css, so light/dark keep working. */
+
+#overview {
+  --ov-display: "Bricolage Grotesque", "Noto Sans SC", sans-serif;
+  --ov-ok: var(--accent);
+  --ov-warn: var(--high);
+  --ov-bad: var(--down);
+  --ov-plot-h: 240px;
+  --ov-ink-2: color-mix(in srgb, var(--text) 62%, var(--bg));
+}
+
+/* ---------- Status sentence ---------- */
+#overview .ov-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px 48px;
+  padding: 4px 0 30px;
+}
+#overview .ov-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 .32em;
+  margin: 0;
+  font: 600 clamp(34px, 5vw, 56px)/1.04 var(--ov-display);
+  letter-spacing: -.028em;
+}
+#overview .ov-headline .status-badge {
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+}
+#overview .ov-headline .status-badge.status-high { color: var(--ov-warn); }
+#overview .ov-headline .status-badge.status-down { color: var(--ov-bad); }
+#overview .ov-sub { margin: 12px 0 0; color: var(--muted); font-size: 14px; }
+#overview .ov-window { margin: 0; text-align: right; }
+#overview .ov-window span { display: block; color: var(--muted); font-size: 12.5px; }
+#overview .ov-window strong { display: block; margin-top: 2px; font: 600 22px/1.2 var(--ov-display); letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+
+/* ---------- Trace + vitals ---------- */
+#overview .ov-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 0 56px;
+  align-items: start;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+#overview .ov-trace { margin: 0; min-width: 0; }
+#overview .ov-trace-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 20px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+#overview .ov-legend { display: flex; gap: 16px; }
+#overview .ov-legend span { display: inline-flex; align-items: center; gap: 7px; }
+#overview .ov-legend span::before { content: ""; width: 14px; height: 2px; border-radius: 1px; background: var(--ov-ok); }
+#overview .ov-legend .k-warn::before { background: var(--ov-warn); }
+#overview .ov-legend .k-bad::before { height: 10px; width: 8px; border-radius: 1px; background: color-mix(in srgb, var(--ov-bad) 30%, transparent); box-shadow: inset 0 0 0 1px var(--ov-bad); }
+
+#overview .ov-plot { position: relative; padding: 0 0 28px 42px; }
+#overview .ov-canvas { position: relative; height: var(--ov-plot-h); }
+#overview .ov-canvas > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#overview .ov-grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 2 4; }
+#overview .ov-grid.is-base { stroke-dasharray: none; stroke: color-mix(in srgb, var(--text) 28%, var(--bg)); }
+#overview .ov-grid.is-limit { stroke: color-mix(in srgb, var(--ov-warn) 70%, transparent); stroke-dasharray: 5 4; }
+#overview .ov-band { fill: color-mix(in srgb, var(--ov-bad) 20%, transparent); }
+#overview .ov-area { fill: color-mix(in srgb, var(--ov-ok) 11%, transparent); stroke: none; }
+#overview .ov-line { fill: none; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+#overview .ov-line.is-ok { stroke: var(--ov-ok); }
+#overview .ov-line.is-warn { stroke: var(--ov-warn); }
+
+#overview .ov-ylabels, #overview .ov-xlabels { position: absolute; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; pointer-events: none; }
+#overview .ov-ylabels { left: 0; top: 0; width: 34px; height: var(--ov-plot-h); }
+#overview .ov-ylabels span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
+#overview .ov-ylabels .is-limit { color: var(--ov-warn); }
+#overview .ov-xlabels { left: 42px; right: 0; bottom: 0; height: 20px; }
+#overview .ov-xlabels span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+#overview .ov-xlabels span:first-child { transform: none; }
+#overview .ov-xlabels span:last-child { left: auto; right: 0; transform: none; color: var(--text); font-weight: 600; }
+
+#overview .ov-cols { position: absolute; inset: 0; display: flex; }
+#overview .ov-col { position: relative; flex: 1; min-width: 0; }
+#overview .ov-col:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+#overview .ov-col:hover::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: color-mix(in srgb, var(--text) 40%, transparent); }
+
+#overview .ov-live { position: absolute; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; border-radius: 50%; background: var(--ov-dot, var(--ov-ok)); box-shadow: 0 0 0 3px var(--bg); pointer-events: none; }
+#overview .ov-live.is-warn { --ov-dot: var(--ov-warn); }
+#overview .ov-live::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; opacity: 0; }
+
+#overview .ov-tip { position: absolute; z-index: 3; top: 8px; display: grid; gap: 2px; min-width: 128px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel, var(--paper)); box-shadow: var(--shadow); font-size: 12px; line-height: 1.45; pointer-events: none; transform: translateX(-50%); }
+#overview .ov-tip[hidden] { display: none; }
+#overview .ov-tip.is-left { transform: none; }
+#overview .ov-tip.is-right { transform: translateX(-100%); }
+#overview .ov-tip b { font: 600 13px var(--ov-display); font-variant-numeric: tabular-nums; }
+#overview .ov-tip span { color: var(--muted); }
+#overview .ov-tip .t-warn { color: var(--ov-warn); }
+#overview .ov-tip .t-bad { color: var(--ov-bad); }
+
+#overview .ov-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 0 18px; color: var(--muted); text-align: center; }
+
+/* ---------- Vitals rail ---------- */
+#overview .ov-vitals { display: grid; margin: 0; }
+#overview .ov-vitals > div { display: grid; gap: 3px; padding: 15px 0; border-bottom: 1px solid var(--line); }
+#overview .ov-vitals > div:first-child { padding-top: 0; }
+#overview .ov-vitals > div:last-child { border-bottom: 0; }
+#overview .ov-vitals dt { color: var(--muted); font-size: 12.5px; }
+#overview .ov-vitals dd { margin: 0; font: 600 34px/1.1 var(--ov-display); letter-spacing: -.022em; font-variant-numeric: tabular-nums; }
+#overview .ov-vitals .ov-unit { margin-left: .28em; color: var(--muted); font: 500 14px var(--ov-display); letter-spacing: 0; }
+#overview .ov-vitals small { color: var(--muted); font-size: 12px; }
+
+
+/* ---------- Incident log ---------- */
+#overview .ov-incidents { margin-top: 60px; }
+#overview .ov-incident-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--text); }
+#overview .ov-incident { --mark: var(--ov-bad); display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 4px 28px; padding: 18px 0 18px 16px; border-bottom: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--mark); }
+#overview .ov-incident.is-warn { --mark: var(--ov-warn); }
+#overview .ov-incident.is-planned { --mark: color-mix(in srgb, var(--text) 30%, var(--bg)); }
+#overview .ov-incident-when { display: grid; align-content: start; gap: 3px; font-variant-numeric: tabular-nums; }
+#overview .ov-incident-when time { font: 600 15px/1.35 var(--ov-display); }
+#overview .ov-incident-when span { color: var(--muted); font-size: 12.5px; }
+#overview .ov-incident-what { min-width: 0; }
+#overview .ov-incident-what p { margin: 0; }
+#overview .ov-incident-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 13px; }
+#overview .ov-incident-kind b { color: var(--mark); font-weight: 700; }
+#overview .ov-incident.is-planned .ov-incident-kind b { color: var(--muted); }
+#overview .ov-incident-kind i { padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11.5px; font-style: normal; }
+#overview .ov-incident-kind i.is-live { border-color: var(--ov-bad); color: var(--ov-bad); }
+#overview .ov-incident-reason { font-size: 15px; line-height: 1.6; }
+#overview .ov-incident-reason span { margin-right: 8px; color: var(--muted); font-size: 12.5px; }
+#overview .ov-incident details { margin-top: 8px; }
+#overview .ov-incident summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 12.5px; }
+#overview .ov-incident summary:hover { color: var(--text); }
+#overview .ov-incident ul { margin: 8px 0 0; padding-left: 18px; color: var(--ov-ink-2); font-size: 13px; line-height: 1.7; }
+
+/* ---------- Feature ledger ---------- */
+#overview .ov-ledger { margin-top: 60px; }
+#overview .ov-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 20px; margin-bottom: 14px; }
+#overview .ov-section-head h2 { margin: 0; font: 600 24px/1.2 var(--ov-display); letter-spacing: -.015em; }
+#overview .ov-section-head p { margin: 0; color: var(--muted); font-size: 12.5px; }
+#overview .ov-ledger-list { margin: 0; padding: 0; list-style: none; }
+#overview .ov-row { display: grid; grid-template-columns: minmax(130px, 1.05fr) minmax(0, 1.7fr) minmax(160px, 1fr) 92px; align-items: center; gap: 4px 20px; padding: 15px 0; border-bottom: 1px solid var(--line); }
+#overview .ov-row-head { padding: 9px 0; border-top: 1px solid var(--text); color: var(--muted); font-size: 12px; }
+#overview .ov-row-head span:last-child, #overview .ov-row time { text-align: right; }
+#overview .ov-row .feature-link { justify-self: start; font: 600 16px/1.3 "Noto Sans SC", sans-serif; text-align: left; }
+#overview .ov-row .feature-link:hover { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 4px; }
+#overview .ov-trigger { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 13px; }
+#overview .ov-row time { color: var(--ov-ink-2); font-size: 13px; }
+#overview .ov-rate { display: flex; align-items: center; gap: 12px; }
+#overview .ov-rate i { position: relative; flex: 1; height: 5px; overflow: hidden; border-radius: 3px; background: color-mix(in srgb, var(--text) 11%, transparent); }
+#overview .ov-rate i::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--rate, 0%); border-radius: inherit; background: var(--ov-ok); }
+#overview .ov-rate b { min-width: 3.4em; font: 600 15px var(--ov-display); text-align: right; font-variant-numeric: tabular-nums; }
+#overview .ov-rate.is-low i::after { background: var(--ov-bad); }
+#overview .ov-rate.is-low b { color: var(--ov-bad); }
+#overview .ov-rate.is-none b { color: var(--muted); font: 400 13px "Noto Sans SC", sans-serif; }
+#overview .ov-empty-row { padding: 22px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
+
+#overview .bot-operations { margin-top: 48px; }
+
+/* ---------- Motion: one reveal on first load, one live pulse ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  #overview .ov-plot.is-first .ov-canvas > svg { animation: ov-reveal 1s cubic-bezier(.3, .7, .2, 1) both; }
+  #overview .ov-plot.is-first .ov-live { animation: ov-pop .3s 1s both; }
+  #overview .ov-live::after { animation: ov-ping 2.6s ease-out 1.2s infinite; }
+}
+@keyframes ov-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 -4px 0 0); } }
+@keyframes ov-pop { from { transform: scale(0); } to { transform: scale(1); } }
+@keyframes ov-ping { 0% { opacity: .5; transform: scale(1); } 100% { opacity: 0; transform: scale(3.2); } }
+
+/* ---------- Narrow screens ---------- */
+@media (max-width: 960px) {
+  #overview .ov-body { grid-template-columns: 1fr; gap: 28px; }
+  #overview .ov-vitals { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
+  #overview .ov-vitals > div:first-child { padding-top: 15px; }
+  #overview .ov-vitals > div:nth-last-child(-n+2) { border-bottom: 0; }
+}
+@media (max-width: 720px) {
+  #overview { --ov-plot-h: 190px; }
+  #overview .ov-window { text-align: left; }
+  #overview .ov-vitals dd { font-size: 28px; }
+  #overview .ov-incident { grid-template-columns: 1fr; padding-left: 14px; }
+  #overview .ov-row-head { display: none; }
+  #overview .ov-ledger-list { border-top: 1px solid var(--text); }
+  #overview .ov-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  #overview .ov-trigger { grid-column: 1 / -1; grid-row: 2; }
+  #overview .ov-rate { grid-column: 1 / -1; grid-row: 3; }
+  #overview .ov-row time { grid-column: 2; grid-row: 1; }
+}

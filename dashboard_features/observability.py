@@ -11,6 +11,12 @@ def get_observability_summary():
     return observability.summary()
 
 
+@router.get("/api/observability/incidents", dependencies=[Depends(require_admin)])
+def get_incidents(limit: int = Query(30, ge=1, le=200)):
+    observability.scan_incidents()
+    return {"incidents": observability.list_incidents(limit)}
+
+
 @router.get("/api/errors", dependencies=[Depends(require_admin)])
 def get_errors(
     level: str = Query("", pattern="^(|ERROR|WARN)$"),

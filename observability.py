@@ -1,5 +1,6 @@
 """Shared SQLite-backed bot telemetry for the bot and FastAPI processes."""
 
+import incidents
 import logging
 import queue
 import re
@@ -97,15 +98,55 @@ class ObservabilityStore:
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS bot_errors_time ON bot_errors(recorded_at DESC)")
             db.execute("CREATE INDEX IF NOT EXISTS bot_errors_filter ON bot_errors(level, status, id DESC)")
+            db.execute("""CREATE TABLE IF NOT EXISTS bot_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recorded_at REAL NOT NULL,
+                kind TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT ''
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS bot_events_time ON bot_events(recorded_at)")
+            db.execute("""CREATE TABLE IF NOT EXISTS incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                peak_latency_ms REAL,
+                reason_code TEXT NOT NULL DEFAULT 'unknown',
+                reason TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '[]',
+                planned INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS incidents_started ON incidents(started_at DESC)")
+            db.execute("CREATE TABLE IF NOT EXISTS observability_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(heartbeat_samples)")}
+            for column in ("loop_lag_ms", "clock_jump_ms"):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE heartbeat_samples ADD COLUMN {column} REAL")
 
-    def record_heartbeat(self, online, latency_ms=None, guild_count=0, uptime_seconds=0, memory_mb=None, recorded_at=None):
+    def record_heartbeat(self, online, latency_ms=None, guild_count=0, uptime_seconds=0, memory_mb=None, recorded_at=None, loop_lag_ms=None, clock_jump_ms=None):
         now = float(recorded_at if recorded_at is not None else time.time())
         with self._connect() as db:
             db.execute(
-                "INSERT INTO heartbeat_samples(recorded_at, online, latency_ms, guild_count, uptime_seconds, memory_mb) VALUES(?, ?, ?, ?, ?, ?)",
-                (now, int(bool(online)), latency_ms, int(guild_count or 0), float(uptime_seconds or 0), memory_mb),
+                "INSERT INTO heartbeat_samples(recorded_at, online, latency_ms, guild_count, uptime_seconds, memory_mb, loop_lag_ms, clock_jump_ms) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (now, int(bool(online)), latency_ms, int(guild_count or 0), float(uptime_seconds or 0), memory_mb, loop_lag_ms, clock_jump_ms),
             )
             db.execute("DELETE FROM heartbeat_samples WHERE recorded_at < ?", (now - 7 * 86400,))
+
+    def record_event(self, kind, detail="", recorded_at=None):
+        """Lifecycle and gateway breadcrumbs (startup, shutdown, disconnect, log lines) used to explain incidents."""
+        now = float(recorded_at if recorded_at is not None else time.time())
+        with self._connect() as db:
+            db.execute("INSERT INTO bot_events(recorded_at, kind, detail) VALUES(?, ?, ?)", (now, str(kind)[:40], str(detail or "")[:400]))
+            db.execute("DELETE FROM bot_events WHERE recorded_at < ?", (now - 14 * 86400,))
+
+    def scan_incidents(self, now=None):
+        with self._connect() as db:
+            incidents.scan(db, now)
+
+    def list_incidents(self, limit=20, now=None):
+        with self._connect() as db:
+            return incidents.list_incidents(db, limit, now)
 
     def record_feature(self, feature, trigger_name="", succeeded=True, recorded_at=None):
         feature = str(feature or "other")[:80]
@@ -175,6 +216,11 @@ class ObservabilityStore:
 
     def summary(self, now=None):
         current = float(now if now is not None else time.time())
+        try:
+            self.scan_incidents(current)
+        except Exception:
+            # A busy database or a classifier bug must never stop the status page from loading.
+            logging.getLogger("observability").exception("Incident scan failed")
         with self._connect() as db:
             latest = db.execute("SELECT * FROM heartbeat_samples ORDER BY recorded_at DESC LIMIT 1").fetchone()
             samples = db.execute(
@@ -252,6 +298,7 @@ class ObservabilityStore:
             "timeline": timeline,
             "features": [feature for feature in features if feature["key"] != "system"],
             "unresolved_errors": int(unresolved),
+            "incidents": self.list_incidents(8, current),
         }
 
 
@@ -311,6 +358,32 @@ class ObservabilityLogHandler(logging.Handler):
                 )
             except Exception:
                 # Telemetry persistence failures should not recursively log.
+                pass
+            finally:
+                self.records.task_done()
+
+
+class GatewayEventHandler(logging.Handler):
+    """Copy discord.py connection log lines into bot_events so incidents can cite them."""
+
+    def __init__(self, store):
+        super().__init__(level=logging.INFO)
+        self.store = store
+        self.records = queue.Queue(maxsize=500)
+        threading.Thread(target=self._write_records, name="gateway-event-writer", daemon=True).start()
+
+    def emit(self, record):
+        try:
+            self.records.put_nowait((record.created, f"{record.name}: {record.getMessage()}"))
+        except queue.Full:
+            pass
+
+    def _write_records(self):
+        while True:
+            created, message = self.records.get()
+            try:
+                self.store.record_event("log", message, recorded_at=created)
+            except Exception:
                 pass
             finally:
                 self.records.task_done()

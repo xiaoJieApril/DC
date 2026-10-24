@@ -1,7 +1,9 @@
 """Bot lifecycle and Discord event handlers."""
 import asyncio
+import atexit
 import logging
 import os
+import sys
 import time
 
 from .core import *
@@ -17,10 +19,28 @@ def process_memory_mb():
         return None
 
 
-@tasks.loop(seconds=15)
+HEARTBEAT_SECONDS = 15
+_last_tick = {"wall": None, "mono": None}
+
+
+def heartbeat_timing():
+    """Measure how late this tick is. Wall clock minus monotonic clock separates host sleep from a blocked event loop."""
+    wall, mono = time.time(), time.monotonic()
+    lag_ms = jump_ms = None
+    if _last_tick["mono"] is not None:
+        mono_delta = mono - _last_tick["mono"]
+        wall_delta = wall - _last_tick["wall"]
+        lag_ms = round(max(0.0, mono_delta - HEARTBEAT_SECONDS) * 1000)
+        jump_ms = round(max(0.0, wall_delta - mono_delta) * 1000)
+    _last_tick["wall"], _last_tick["mono"] = wall, mono
+    return lag_ms, jump_ms
+
+
+@tasks.loop(seconds=HEARTBEAT_SECONDS)
 async def bot_heartbeat_worker():
     latency = getattr(bot, "latency", None)
     latency_ms = round(float(latency) * 1000, 1) if latency is not None and latency == latency else None
+    loop_lag_ms, clock_jump_ms = heartbeat_timing()
     await asyncio.to_thread(
         observability.record_heartbeat,
         bot.is_ready(),
@@ -28,7 +48,12 @@ async def bot_heartbeat_worker():
         len(bot.guilds),
         max(0, time.time() - BOT_STARTED_AT),
         process_memory_mb(),
+        None,
+        loop_lag_ms,
+        clock_jump_ms,
     )
+    # Closing or refreshing incidents here means they are recorded even when nobody has the dashboard open.
+    await asyncio.to_thread(observability.scan_incidents)
 
 
 @bot_heartbeat_worker.before_loop
@@ -188,8 +213,18 @@ async def on_member_join(member: discord.Member):
         enqueue_welcome_job(job)
 
 
+_started_reported = False
+atexit.register(lambda: observability.record_event("shutdown", "进程正常退出（收到停止信号或手动关闭）"))
+
+
 @bot.event
 async def on_ready():
+    global _started_reported
+    if not _started_reported:
+        _started_reported = True
+        await asyncio.to_thread(observability.record_event, "startup", f"pid={os.getpid()} platform={sys.platform}")
+    else:
+        await asyncio.to_thread(observability.record_event, "reconnected", "on_ready 再次触发（会话已重新建立）")
     print(f"[BOT] Online as {bot.user} (ID: {bot.user.id})")
     print(f"[BOT] Serving {len(bot.guilds)} guild(s)")
     print("[ONBOARDING] Server Members Intent is required for rules-gate role assignment")
@@ -203,6 +238,7 @@ async def on_ready():
 
 @bot.event
 async def on_disconnect():
+    await asyncio.to_thread(observability.record_event, "disconnect", "与 Discord 网关的连接断开")
     await asyncio.to_thread(
         observability.record_heartbeat,
         False,
@@ -211,6 +247,11 @@ async def on_disconnect():
         max(0, time.time() - BOT_STARTED_AT),
         process_memory_mb(),
     )
+
+
+@bot.event
+async def on_resumed():
+    await asyncio.to_thread(observability.record_event, "resume", "网关会话已恢复")
 
 
 @bot.event
