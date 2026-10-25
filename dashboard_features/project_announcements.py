@@ -17,6 +17,7 @@ import project_ai
 
 router = APIRouter()
 store.init_project_db()
+COMMUNITY_NEW_ROLE_ID = "1515369580900388884"
 
 
 class DraftPayload(BaseModel):
@@ -243,18 +244,23 @@ def publish_project(project_id: int, payload: PublishPayload):
         embed["url"] = project["draft_source_url"]
     embed["fields"] = []
     if project["draft_date"]:
-        embed["fields"].append({"name": "活动时间", "value": project["draft_date"][:1024], "inline": True})
-    for key, label in (("draft_illustrator", "画师"), ("draft_funding_goal", "募资目标"),
-                       ("draft_minimum_donation", "最低捐款")):
+        embed["fields"].append({"name": "Event Time", "value": project["draft_date"][:1024], "inline": True})
+    for key, label in (("draft_illustrator", "Illustrator"), ("draft_funding_goal", "Funding Goal"),
+                       ("draft_minimum_donation", "Minimum Donation")):
         value = project.get(key, "").strip()
         if value:
             embed["fields"].append({"name": label, "value": value[:1024], "inline": True})
     donation_url = project.get("draft_donation_url", "").strip()
     if donation_url:
-        embed["fields"].append({"name": "捐款方式", "value": f"[前往捐款]({donation_url})"[:1024], "inline": True})
+        embed["fields"].append({"name": "Donation", "value": f"[Donate]({donation_url})"[:1024], "inline": True})
     if project["draft_image_url"]:
         embed["image"] = {"url": project["draft_image_url"]}
+    role_ping_sent = False
     try:
+        discord_request("POST", f"/channels/{payload.channel_id}/messages",
+                        {"content": f"<@&{COMMUNITY_NEW_ROLE_ID}>",
+                         "allowed_mentions": {"parse": [], "roles": [COMMUNITY_NEW_ROLE_ID]}})
+        role_ping_sent = True
         result = discord_request("POST", f"/channels/{payload.channel_id}/messages",
                                  {"embeds": [embed], "allowed_mentions": {"parse": []}})
     except HTTPException as exc:
@@ -267,7 +273,7 @@ def publish_project(project_id: int, payload: PublishPayload):
                 "discord_circuit_open", "discord_upstream_busy", "discord_auth_paused", "discord_shared_budget",
             }
         )
-        if not ambiguous:
+        if not ambiguous and not role_ping_sent:
             store.release_project_publish(project_id, payload.guild_id)
         raise
     except Exception as exc:

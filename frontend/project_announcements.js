@@ -39,16 +39,16 @@ function renderProjectPreview() {
   const donation = $("projectDraftDonationUrl").value.trim();
   const imageMarkup = /^https?:\/\//i.test(image) ? `<img class="project-preview-image" src="${projectEscape(image)}" alt="项目预览图" />` : "";
   const titleMarkup = title ? `<a class="project-embed-title" href="${projectEscape(source || "#")}" target="_blank" rel="noopener">${projectEscape(title)}</a>` : "";
-  const dateMarkup = date ? `<div class="project-embed-date">${projectEscape(date)}</div>` : "";
-  const sourceMarkup = /^https?:\/\//i.test(source) ? `<a class="project-embed-link" href="${projectEscape(source)}" target="_blank" rel="noopener">查看 Gra-VT 项目</a>` : "";
+  const dateMarkup = date ? `<div class="project-embed-date"><strong>Event Time</strong>: ${projectEscape(date)}</div>` : "";
+  const sourceMarkup = /^https?:\/\//i.test(source) ? `<a class="project-embed-link" href="${projectEscape(source)}" target="_blank" rel="noopener">View Gra-VT Project</a>` : "";
   const extraFields = [
-    ["画师", $("projectDraftIllustrator").value.trim()],
-    ["募资目标", $("projectDraftFundingGoal").value.trim()],
-    ["最低捐款", $("projectDraftMinimumDonation").value.trim()],
-    ["捐款方式", donation],
+    ["Illustrator", $("projectDraftIllustrator").value.trim()],
+    ["Funding Goal", $("projectDraftFundingGoal").value.trim()],
+    ["Minimum Donation", $("projectDraftMinimumDonation").value.trim()],
+    ["Donation", donation],
   ].filter(([, value]) => value).map(([label, value]) => `<div class="project-preview-field"><strong>${label}</strong><span>${projectEscape(value)}</span></div>`).join("");
-  const donationMarkup = /^https?:\/\//i.test(donation) ? `<a class="project-donation-link" href="${projectEscape(donation)}" target="_blank" rel="noopener">前往捐款</a>` : "";
-  $("projectPreview").innerHTML = `<div class="discord-message-head"><img class="discord-avatar" src="./assets/bot-logo.jpg" alt=""/><div class="discord-message-meta"><strong>DC Bot</strong><span class="bot-tag">BOT</span><time>现在</time><small>发送项目公告</small></div></div><div class="discord-embed project-discord-embed">${titleMarkup}<div class="embed-body">${projectEscape(body).replace(/\n/g, "<br>") || "公告正文预览"}</div>${dateMarkup}<div class="project-preview-fields">${extraFields}</div>${donationMarkup}${imageMarkup}${sourceMarkup}</div>`;
+  const donationMarkup = /^https?:\/\//i.test(donation) ? `<a class="project-donation-link" href="${projectEscape(donation)}" target="_blank" rel="noopener">Donate</a>` : "";
+  $("projectPreview").innerHTML = `<div class="discord-message-head"><img class="discord-avatar" src="./assets/bot-logo.jpg" alt=""/><div class="discord-message-meta"><strong>DC Bot</strong><span class="bot-tag">BOT</span><time>现在</time><small>Send project announcement</small></div></div><div class="discord-plain-content">&lt;@&amp;1515369580900388884&gt;</div><div class="discord-embed project-discord-embed">${titleMarkup}<div class="embed-body">${projectEscape(body).replace(/\n/g, "<br>") || "Announcement preview"}</div>${dateMarkup}<div class="project-preview-fields">${extraFields}</div>${donationMarkup}${imageMarkup}${sourceMarkup}</div>`;
 }
 
 function selectProject(projectId) {
